@@ -107,16 +107,53 @@ def extract_grd_zip(zip_bytes):
     return tmpdir
 
 
+def extract_drive_file_id(drive_url):
+    """Extract Google Drive file ID from common share-link formats."""
+    patterns = [
+        r"/d/([a-zA-Z0-9_-]{10,})",
+        r"id=([a-zA-Z0-9_-]{10,})",
+        r"^([a-zA-Z0-9_-]{10,})$",  # raw ID pasted directly
+    ]
+    for p in patterns:
+        m = re.search(p, drive_url)
+        if m:
+            return m.group(1)
+    return None
+
+
 def extract_grd_zip_from_drive(drive_url):
     """Download a zip from a Google Drive share link and extract it. Returns extracted dir."""
     tmpdir = tempfile.mkdtemp()
     zpath = os.path.join(tmpdir, "imd_drive.zip")
-    gdown.download(url=drive_url, output=zpath, quiet=False, fuzzy=True)
-    if not os.path.exists(zpath) or os.path.getsize(zpath) == 0:
-        raise FileNotFoundError("Download failed - check the Google Drive link and sharing permissions "
-                                 "(must be set to 'Anyone with the link').")
-    with zipfile.ZipFile(zpath) as z:
-        z.extractall(tmpdir)
+
+    file_id = extract_drive_file_id(drive_url.strip())
+    if not file_id:
+        raise ValueError(
+            "Could not parse a file ID from that link. Use the 'Anyone with the link' "
+            "share link, format: https://drive.google.com/file/d/FILE_ID/view?usp=sharing"
+        )
+
+    try:
+        gdown.download(id=file_id, output=zpath, quiet=False)
+    except Exception as e:
+        raise RuntimeError(f"gdown download failed: {e}")
+
+    if not os.path.exists(zpath) or os.path.getsize(zpath) < 1000:
+        raise FileNotFoundError(
+            "Download failed or file too small - check the Google Drive link is set to "
+            "'Anyone with the link' (Viewer) and points directly to the zip file."
+        )
+
+    try:
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(tmpdir)
+    except zipfile.BadZipFile:
+        raise ValueError(
+            "Downloaded file is not a valid zip. Google Drive may have served an HTML "
+            "warning page instead of the file (common for files > a few hundred MB on "
+            "Streamlit Cloud). Try splitting the IMD data into smaller zips, or use the "
+            "Colab notebook for the full archive."
+        )
     return tmpdir
 
 
