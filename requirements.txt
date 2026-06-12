@@ -6,3 +6,5 @@ shapely
 scikit-learn
 openpyxl
 gdown==4.7.1
+matplotlib
+earthengine-api

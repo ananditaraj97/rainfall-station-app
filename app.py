@@ -21,6 +21,9 @@ from shapely.geometry import box
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import silhouette_score
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import streamlit as st
 import gdown
 
@@ -312,6 +315,13 @@ def to_excel_bytes(df):
     return buf.getvalue()
 
 
+def fig_to_png_bytes(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ============================================================
 # STREAMLIT UI
 # ============================================================
@@ -466,6 +476,70 @@ if run_btn:
     station_cols = list(rename_map.values())
     basin_monthly = monthly[["Year", "Month"]].copy()
     basin_monthly["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
+
+    # ---- Plots ----
+    st.subheader("Plots")
+
+    figs = {}
+
+    # 1. Basin outline + final station locations
+    fig1, ax1 = plt.subplots(figsize=(6, 6))
+    basin_gdf_wgs.boundary.plot(ax=ax1, color="black", linewidth=1)
+    ax1.scatter(final_table["Longitude"], final_table["Latitude"], c="red", s=60, zorder=5)
+    for _, r in final_table.iterrows():
+        ax1.annotate(r["Station_ID"], (r["Longitude"], r["Latitude"]),
+                      xytext=(3, 3), textcoords="offset points", fontsize=8)
+    ax1.set_xlabel("Longitude")
+    ax1.set_ylabel("Latitude")
+    ax1.set_title("Final representative rainfall stations")
+    figs["station_map"] = fig1
+
+    # 2. Mean annual rainfall per station (bar chart)
+    fig2, ax2 = plt.subplots(figsize=(7, 4))
+    ax2.bar(final_table["Station_ID"], final_table["Mean_Annual_Rainfall_mm"], color="#4a90d9")
+    ax2.set_ylabel("Mean annual rainfall (mm)")
+    ax2.set_title("Mean annual rainfall by station")
+    ax2.tick_params(axis="x", rotation=45)
+    fig2.tight_layout()
+    figs["mean_annual_rainfall"] = fig2
+
+    # 3. Basin-average monthly climatology (long-term mean by calendar month)
+    climatology = basin_monthly.groupby("Month")["Basin_Rainfall_mm"].mean()
+    fig3, ax3 = plt.subplots(figsize=(7, 4))
+    ax3.bar(climatology.index, climatology.values, color="#2e8b57")
+    ax3.set_xticks(range(1, 13))
+    ax3.set_xlabel("Month")
+    ax3.set_ylabel("Mean monthly rainfall (mm)")
+    ax3.set_title("Long-term monthly climatology (basin average)")
+    fig3.tight_layout()
+    figs["monthly_climatology"] = fig3
+
+    # 4. Basin-average monthly rainfall time series
+    bm = basin_monthly.copy()
+    bm["Date"] = pd.to_datetime(dict(year=bm["Year"], month=bm["Month"], day=1))
+    fig4, ax4 = plt.subplots(figsize=(10, 4))
+    ax4.plot(bm["Date"], bm["Basin_Rainfall_mm"], color="#4a90d9", linewidth=0.8)
+    ax4.set_xlabel("Year")
+    ax4.set_ylabel("Monthly rainfall (mm)")
+    ax4.set_title("Basin-average monthly rainfall time series")
+    fig4.tight_layout()
+    figs["basin_monthly_timeseries"] = fig4
+
+    p1, p2 = st.columns(2)
+    with p1:
+        st.pyplot(fig1)
+        st.download_button("Download station_map.png", fig_to_png_bytes(fig1), "station_map.png")
+    with p2:
+        st.pyplot(fig2)
+        st.download_button("Download mean_annual_rainfall.png", fig_to_png_bytes(fig2), "mean_annual_rainfall.png")
+
+    p3, p4 = st.columns(2)
+    with p3:
+        st.pyplot(fig3)
+        st.download_button("Download monthly_climatology.png", fig_to_png_bytes(fig3), "monthly_climatology.png")
+    with p4:
+        st.pyplot(fig4)
+        st.download_button("Download basin_monthly_timeseries.png", fig_to_png_bytes(fig4), "basin_monthly_timeseries.png")
 
     # ---- Downloads ----
     st.subheader("Downloads")
