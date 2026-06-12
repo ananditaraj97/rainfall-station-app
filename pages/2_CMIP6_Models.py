@@ -41,9 +41,13 @@ def init_earth_engine():
             "No 'gee_service_account' found in st.secrets. "
             "Add the service account JSON fields under [gee_service_account] in app secrets."
         )
-    sa_info = dict(st.secrets["gee_service_account"])
-    credentials = ee.ServiceAccountCredentials(sa_info["client_email"], key_data=json.dumps(sa_info))
-    ee.Initialize(credentials)
+    # ensure everything is plain str (st.secrets values can be AttrDict-wrapped)
+    sa_info = {k: str(v) for k, v in dict(st.secrets["gee_service_account"]).items()}
+    from google.oauth2 import service_account
+    credentials = service_account.Credentials.from_service_account_info(
+        sa_info, scopes=["https://www.googleapis.com/auth/earthengine"]
+    )
+    ee.Initialize(credentials, project=sa_info.get("project_id"))
     return True
 
 
@@ -128,8 +132,22 @@ stations_df = None
 if station_input_mode == "Upload Final_Stations.xlsx":
     f = st.file_uploader("Final_Stations.xlsx (from Tab 1)", type=["xlsx"])
     if f is not None:
-        stations_df = pd.read_excel(f)[["Station_ID", "Latitude", "Longitude"]]
-        st.dataframe(stations_df, hide_index=True)
+        raw = pd.read_excel(f)
+        # case-insensitive column matching
+        col_map = {c.lower(): c for c in raw.columns}
+        required = ["station_id", "latitude", "longitude"]
+        missing = [r for r in required if r not in col_map]
+        if missing:
+            st.error(
+                f"Uploaded file is missing required column(s): {missing}. "
+                f"Found columns: {list(raw.columns)}. "
+                f"Make sure you uploaded Final_Stations.xlsx (with Station_ID, Latitude, Longitude columns), "
+                f"not the rainfall data file."
+            )
+        else:
+            stations_df = raw[[col_map["station_id"], col_map["latitude"], col_map["longitude"]]]
+            stations_df.columns = ["Station_ID", "Latitude", "Longitude"]
+            st.dataframe(stations_df, hide_index=True)
 else:
     default_text = "Station_ID,Latitude,Longitude\nST001,18.50,73.75\nST002,17.00,77.00"
     text = st.text_area("CSV: Station_ID,Latitude,Longitude", value=default_text, height=150)
