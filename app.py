@@ -66,12 +66,12 @@ def load_basin_from_zip(zip_bytes):
         raise FileNotFoundError("No .shp file found in uploaded zip.")
     gdf = gpd.read_file(shp_files[0])
     gdf_wgs = gdf.to_crs("EPSG:4326")
-    basin_union = gdf_wgs.union_all()
+    basin_union = gdf_wgs.unary_union
     return gdf_wgs, basin_union
 
 
 def equal_area_crs(basin_gdf_wgs):
-    cen = basin_gdf_wgs.union_all().centroid
+    cen = basin_gdf_wgs.unary_union.centroid
     zone = int((cen.x + 180) / 6) + 1
     return f"EPSG:{32600 + zone}"
 
@@ -81,7 +81,7 @@ def find_grids_inside_basin(grid_gdf, basin_union, basin_gdf_wgs, min_area_km2):
     candidates = grid_gdf[grid_gdf.intersects(basin_union)].copy()
     candidates_m = candidates.to_crs(metric_crs)
     basin_m = gpd.GeoDataFrame(geometry=[basin_union], crs="EPSG:4326").to_crs(metric_crs)
-    basin_geom_m = basin_m.union_all()
+    basin_geom_m = basin_m.unary_union
 
     areas_km2 = [geom.intersection(basin_geom_m).area / 1e6 for geom in candidates_m.geometry]
     candidates["Represented_Area_km2"] = areas_km2
