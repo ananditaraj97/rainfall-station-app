@@ -17,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 
 PERCENTILES = [5, 25, 50, 75, 95]
 
@@ -58,6 +59,8 @@ def load_basin_monthly_files(uploaded_files):
 # UI
 # ============================================================
 st.set_page_config(page_title="Ensemble & Uncertainty Analysis", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("Ensemble Generation & Uncertainty Analysis")
 st.caption("MODEL 1 — Tab 5: Combine multiple CMIP6 model basin-monthly files (from Tab 2 historical "
            "or Tab 4 future projections, same scenario/period) into mean/median ensembles with "
@@ -247,5 +250,4 @@ if run_btn:
     d1.download_button("Ensemble_Basin_Monthly.xlsx", to_excel_bytes(merged.drop(columns="Date")), "Ensemble_Basin_Monthly.xlsx")
     d2.download_button("Ensemble_Annual_Uncertainty.xlsx", to_excel_bytes(annual_ensemble), "Ensemble_Annual_Uncertainty.xlsx")
 
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+footer()
