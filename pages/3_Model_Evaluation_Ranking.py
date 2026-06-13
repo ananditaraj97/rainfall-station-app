@@ -191,14 +191,15 @@ def load_and_classify_all(uploaded_files, zip_file):
 # ============================================================
 st.set_page_config(page_title="CMIP6 Model Evaluation & Ranking", layout="wide")
 st.title("CMIP6 Model Evaluation & Ranking")
-st.caption("MODEL 1 — Tab 3: Compare CMIP6 GCM precipitation against IMD observed rainfall "
-           "(R2, NSE, RMSE, MAE, PBIAS, KGE), rank models, and view comparison plots.")
+st.caption("MODEL 1 — Tab 3: Compare NEX-GDDP-CMIP6 bias-corrected, downscaled precipitation against "
+           "IMD observed rainfall (R2, NSE, RMSE, MAE, PBIAS, KGE), rank models, and view comparison plots.")
 
 st.subheader("1. Data — IMD + CMIP6 models")
 st.caption(
     "Easiest: put all your files in one zip — IMD outputs from Tab 1 "
     "(Representative_Stations_Rainfall / _Monthly, Basin_Monthly_Rainfall — daily, monthly, "
-    "or basin-monthly, any of these work) plus any number of CMIP6 model files from Tab 2 "
+    "or basin-monthly, any of these work) plus any number of NEX-GDDP-CMIP6 (bias-corrected, downscaled) "
+    "model files from Tab 2 "
     "(`CMIP6_<model>_..._daily/monthly/basin_monthly.xlsx`). "
     "The app auto-detects which file is IMD and which are models (by filename/columns), "
     "and computes both basin-average and station-wise R2/NSE/etc wherever data allows."
