@@ -62,7 +62,7 @@ st.set_page_config(page_title="Ensemble & Uncertainty Analysis", layout="wide")
 inject_css()
 sidebar_branding()
 st.title("Ensemble Generation & Uncertainty Analysis")
-st.caption("MODEL 1 — Tab 5: Combine multiple CMIP6 model basin-monthly files (from Tab 2 historical "
+st.caption("Tab 5: Combine multiple CMIP6 model basin-monthly files (from Tab 2 historical "
            "or Tab 4 future projections, same scenario/period) into mean/median ensembles with "
            "percentile uncertainty bands (5/25/50/75/95), fan plots, and boxplots.")
 
