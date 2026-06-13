@@ -117,6 +117,22 @@ def to_excel_bytes(df):
     return buf.getvalue()
 
 
+def build_monthly_and_basin(daily_df):
+    """From a Date x Station daily DataFrame, build monthly (Year, Month, stations)
+    and basin-average monthly (Year, Month, Basin_Rainfall_mm) DataFrames -
+    same convention as Tab 1 IMD outputs."""
+    station_cols = [c for c in daily_df.columns if c != "Date"]
+    d = daily_df.copy()
+    d["Year"] = d["Date"].dt.year
+    d["Month"] = d["Date"].dt.month
+    monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
+
+    basin_monthly = monthly[["Year", "Month"]].copy()
+    basin_monthly["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
+
+    return monthly, basin_monthly
+
+
 # ============================================================
 # UI
 # ============================================================
@@ -208,11 +224,18 @@ if run_btn:
 
     if model_outputs:
         st.subheader("3. Results & downloads")
+        st.caption("Each model is provided in the same daily / monthly / basin-monthly formats as the "
+                   "IMD outputs from Tab 1 (Representative_Stations_Rainfall, Representative_Stations_Monthly, "
+                   "Basin_Monthly_Rainfall) - so they can be combined with IMD files for Tab 3 evaluation.")
         for model, df_model in model_outputs.items():
+            monthly, basin_monthly = build_monthly_and_basin(df_model)
             with st.expander(f"{model} — {df_model.shape[0]} days"):
                 st.dataframe(df_model.head(), hide_index=True)
-                fname = f"CMIP6_{model}_historical_{start_year}-{end_year}.xlsx"
-                st.download_button(f"Download {fname}", to_excel_bytes(df_model), fname)
+                base = f"CMIP6_{model}_{start_year}-{end_year}"
+                c1, c2, c3 = st.columns(3)
+                c1.download_button(f"Download {base}_daily.xlsx", to_excel_bytes(df_model), f"{base}_daily.xlsx")
+                c2.download_button(f"Download {base}_monthly.xlsx", to_excel_bytes(monthly), f"{base}_monthly.xlsx")
+                c3.download_button(f"Download {base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly), f"{base}_basin_monthly.xlsx")
 
 st.markdown("---")
 st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
