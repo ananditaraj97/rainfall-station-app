@@ -248,4 +248,4 @@ if run_btn:
     d2.download_button("Ensemble_Annual_Uncertainty.xlsx", to_excel_bytes(annual_ensemble), "Ensemble_Annual_Uncertainty.xlsx")
 
 st.markdown("---")
-st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
+st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
