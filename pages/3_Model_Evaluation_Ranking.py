@@ -90,40 +90,100 @@ def to_monthly(df, cols):
     return d.drop(columns="Date").groupby(["Year", "Month"])[cols].sum(min_count=1).reset_index()
 
 
-def read_model_files(uploaded_files, zip_file):
-    """Return dict: model_name -> daily DataFrame (Date + station columns)."""
-    model_daily = {}
+def build_monthly_and_basin(daily_df):
+    """From a Date x Station daily DataFrame, build monthly (Year, Month, stations)
+    and basin-average monthly (Year, Month, Basin_Rainfall_mm)."""
+    station_cols = [c for c in daily_df.columns if c != "Date"]
+    monthly = to_monthly(daily_df, station_cols)
+    basin_monthly = monthly[["Year", "Month"]].copy()
+    basin_monthly["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
+    return monthly, basin_monthly
+
+
+def classify_file(name, df):
+    """Classify a single uploaded/extracted Excel file as IMD or CMIP6 model data,
+    and return its monthly-station and basin-monthly DataFrames (whichever derivable).
+    Returns None if the file isn't a recognised rainfall data format (e.g. Final_Stations.xlsx)."""
+    cols = set(df.columns)
+    name_lower = name.lower()
+    is_model = "cmip6" in name_lower
+
+    model_name = None
+    if is_model:
+        if "CMIP6_" in name:
+            model_name = name.split("CMIP6_")[-1].split("_")[0]
+        else:
+            model_name = os.path.splitext(name)[0]
+
+    monthly_station = None
+    basin_monthly = None
+
+    if "Date" in cols:
+        station_cols = [c for c in df.columns if c != "Date"]
+        if not station_cols:
+            return None
+        monthly_station, basin_monthly = build_monthly_and_basin(df)
+    elif {"Year", "Month", "Basin_Rainfall_mm"}.issubset(cols):
+        basin_monthly = df[["Year", "Month", "Basin_Rainfall_mm"]].copy()
+    elif {"Year", "Month"}.issubset(cols) and len(cols) > 2:
+        station_cols = [c for c in df.columns if c not in ("Year", "Month")]
+        monthly_station = df[["Year", "Month"] + station_cols].copy()
+        basin_monthly = monthly_station[["Year", "Month"]].copy()
+        basin_monthly["Basin_Rainfall_mm"] = monthly_station[station_cols].mean(axis=1)
+    else:
+        return None  # unrecognised format (e.g. Final_Stations.xlsx)
+
+    return {"is_model": is_model, "model_name": model_name,
+            "monthly_station": monthly_station, "basin_monthly": basin_monthly}
+
+
+def load_and_classify_all(uploaded_files, zip_file):
+    """Read all uploaded files (individual + zip), classify each as IMD or model data,
+    and aggregate into: imd_basin_monthly, imd_station_monthly,
+    model_monthly_basin (dict), model_monthly_station (dict)."""
+    imd_basin_monthly = None
+    imd_station_monthly = None
+    model_monthly_basin = {}
+    model_monthly_station = {}
+    skipped = []
+
+    def handle(name, df):
+        nonlocal imd_basin_monthly, imd_station_monthly
+        rec = classify_file(name, df)
+        if rec is None:
+            skipped.append(name)
+            return
+        if rec["is_model"]:
+            m = rec["model_name"]
+            if rec["monthly_station"] is not None:
+                model_monthly_station[m] = rec["monthly_station"]
+                model_monthly_basin[m] = rec["basin_monthly"]  # derived from station, preferred
+            elif rec["basin_monthly"] is not None and m not in model_monthly_basin:
+                model_monthly_basin[m] = rec["basin_monthly"]
+        else:
+            if rec["monthly_station"] is not None:
+                imd_station_monthly = rec["monthly_station"]
+                imd_basin_monthly = rec["basin_monthly"]  # derived from station, preferred
+            elif rec["basin_monthly"] is not None and imd_basin_monthly is None:
+                imd_basin_monthly = rec["basin_monthly"]
 
     for f in uploaded_files or []:
-        name = f.name
-        model_name = name.replace(".xlsx", "")
-        if "CMIP6_" in model_name:
-            model_name = model_name.split("CMIP6_")[-1].split("_")[0]
         df = pd.read_excel(f)
-        if "Date" not in df.columns:
-            st.warning(f"{name}: no 'Date' column, skipped.")
-            continue
-        model_daily[model_name] = df
+        handle(f.name, df)
 
     if zip_file is not None:
         tmpdir = tempfile.mkdtemp()
-        zpath = os.path.join(tmpdir, "models.zip")
+        zpath = os.path.join(tmpdir, "data.zip")
         with open(zpath, "wb") as fh:
             fh.write(zip_file.getvalue())
         with zipfile.ZipFile(zpath) as z:
             z.extractall(tmpdir)
-        for fpath in glob.glob(os.path.join(tmpdir, "**", "*.xlsx"), recursive=True):
+        for fpath in sorted(glob.glob(os.path.join(tmpdir, "**", "*.xlsx"), recursive=True)):
             name = os.path.basename(fpath)
-            model_name = name.replace(".xlsx", "")
-            if "CMIP6_" in model_name:
-                model_name = model_name.split("CMIP6_")[-1].split("_")[0]
             df = pd.read_excel(fpath)
-            if "Date" not in df.columns:
-                st.warning(f"{name}: no 'Date' column, skipped.")
-                continue
-            model_daily[model_name] = df
+            handle(name, df)
 
-    return model_daily
+    return imd_basin_monthly, imd_station_monthly, model_monthly_basin, model_monthly_station, skipped
 
 
 # ============================================================
@@ -134,58 +194,53 @@ st.title("CMIP6 Model Evaluation & Ranking")
 st.caption("MODEL 1 — Tab 3: Compare CMIP6 GCM precipitation against IMD observed rainfall "
            "(R2, NSE, RMSE, MAE, PBIAS, KGE), rank models, and view comparison plots.")
 
-st.subheader("1. IMD reference data (from Tab 1)")
-c1, c2 = st.columns(2)
-imd_basin_file = c1.file_uploader("Basin_Monthly_Rainfall.xlsx (required - basin-average comparison)", type=["xlsx"])
-imd_station_file = c2.file_uploader("Representative_Stations_Monthly.xlsx (optional - station-wise comparison)", type=["xlsx"])
+st.subheader("1. Data — IMD + CMIP6 models")
+st.caption(
+    "Easiest: put all your files in one zip — IMD outputs from Tab 1 "
+    "(Representative_Stations_Rainfall / _Monthly, Basin_Monthly_Rainfall — daily, monthly, "
+    "or basin-monthly, any of these work) plus any number of CMIP6 model files from Tab 2 "
+    "(`CMIP6_<model>_..._daily/monthly/basin_monthly.xlsx`). "
+    "The app auto-detects which file is IMD and which are models (by filename/columns), "
+    "and computes both basin-average and station-wise R2/NSE/etc wherever data allows."
+)
+combined_zip = st.file_uploader("Combined zip (IMD + CMIP6 model files)", type=["zip"])
 
-st.subheader("2. CMIP6 model outputs (from Tab 2)")
-st.caption("Upload one or more `CMIP6_<model>_*.xlsx` files (Date x Station, daily mm), "
-           "or a single zip containing multiple such files.")
-c3, c4 = st.columns(2)
-model_files = c3.file_uploader("Model Excel files", type=["xlsx"], accept_multiple_files=True)
-model_zip = c4.file_uploader("...or a zip of model Excel files", type=["zip"])
+with st.expander("Or upload files individually (no zip)"):
+    individual_files = st.file_uploader(
+        "IMD + CMIP6 Excel files (any of: Representative_Stations_Rainfall/_Monthly, "
+        "Basin_Monthly_Rainfall, CMIP6_<model>_*.xlsx)",
+        type=["xlsx"], accept_multiple_files=True
+    )
 
 run_btn = st.button("Run evaluation", type="primary",
-                     disabled=(imd_basin_file is None or (not model_files and model_zip is None)))
+                     disabled=(combined_zip is None and not individual_files))
 
-if imd_basin_file is None or (not model_files and model_zip is None):
-    st.info("Upload at least the IMD Basin_Monthly_Rainfall.xlsx and one or more CMIP6 model files to begin.")
+if combined_zip is None and not individual_files:
+    st.info("Upload a combined zip (or individual files) containing IMD data and one or more CMIP6 model files to begin.")
 
 if run_btn:
-    imd_basin_monthly = pd.read_excel(imd_basin_file)  # Year, Month, Basin_Rainfall_mm
-    required_cols = {"Year", "Month", "Basin_Rainfall_mm"}
-    if not required_cols.issubset(imd_basin_monthly.columns):
-        st.error(f"Basin_Monthly_Rainfall.xlsx must have columns {required_cols}. "
-                 f"Found: {list(imd_basin_monthly.columns)}")
+    imd_basin_monthly, imd_station_monthly, model_monthly_basin, model_monthly_station, skipped = \
+        load_and_classify_all(individual_files, combined_zip)
+
+    if skipped:
+        st.caption(f"Skipped (unrecognised format): {', '.join(skipped)}")
+
+    if imd_basin_monthly is None:
+        st.error("No IMD reference data found (need Basin_Monthly_Rainfall, "
+                 "Representative_Stations_Monthly, or Representative_Stations_Rainfall).")
         st.stop()
 
-    imd_station_monthly = None
-    if imd_station_file is not None:
-        imd_station_monthly = pd.read_excel(imd_station_file)  # Year, Month, ST001, ST002, ...
-
-    model_daily = read_model_files(model_files, model_zip)
-    if not model_daily:
-        st.error("No valid model files found.")
+    if not model_monthly_basin:
+        st.error("No CMIP6 model files found (filenames must contain 'CMIP6').")
         st.stop()
 
-    st.success(f"Loaded {len(model_daily)} model(s): {', '.join(model_daily.keys())}")
-
-    # ---- aggregate models to monthly, basin average ----
-    model_monthly_basin = {}
-    model_monthly_station = {}
-    for model, df in model_daily.items():
-        station_cols = [c for c in df.columns if c != "Date"]
-        monthly = to_monthly(df, station_cols)
-        model_monthly_station[model] = monthly
-        basin_avg = monthly[["Year", "Month"]].copy()
-        basin_avg["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
-        model_monthly_basin[model] = basin_avg
-
-    # ============================================================
+    st.success(f"IMD reference loaded. Found {len(model_monthly_basin)} model(s): "
+               f"{', '.join(model_monthly_basin.keys())}"
+               + (" (station-wise data also available)" if imd_station_monthly is not None else
+                  " (basin-average only — no IMD station-wise file found)"))
     # BASIN-AVERAGE METRICS
     # ============================================================
-    st.subheader("3. Basin-average metrics & ranking")
+    st.subheader("2. Basin-average metrics & ranking")
     basin_results = []
     for model, mdf in model_monthly_basin.items():
         merged = imd_basin_monthly.merge(mdf, on=["Year", "Month"], suffixes=("_obs", "_sim"))
@@ -220,7 +275,7 @@ if run_btn:
     # ============================================================
     station_metrics_df = None
     if imd_station_monthly is not None:
-        st.subheader("3b. Station-wise metrics")
+        st.subheader("2b. Station-wise metrics")
         sta_results = []
         imd_station_cols = [c for c in imd_station_monthly.columns if c not in ("Year", "Month")]
         for model, mdf in model_monthly_station.items():
@@ -247,7 +302,7 @@ if run_btn:
     # ============================================================
     # PLOTS
     # ============================================================
-    st.subheader("4. Plots")
+    st.subheader("3. Plots")
     figs = {}
 
     # 4a. Scatter plots (basin monthly, IMD vs each model)
@@ -358,7 +413,7 @@ if run_btn:
     # ============================================================
     # DOWNLOADS
     # ============================================================
-    st.subheader("5. Downloads")
+    st.subheader("4. Downloads")
     d1, d2 = st.columns(2)
     d1.download_button("Model_Metrics_Basin.xlsx", to_excel_bytes(basin_metrics_df), "Model_Metrics_Basin.xlsx")
     d2.download_button("Model_Ranking.xlsx", to_excel_bytes(ranking), "Model_Ranking.xlsx")
