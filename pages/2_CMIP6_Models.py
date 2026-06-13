@@ -162,10 +162,10 @@ selected_models = st.multiselect(
     f"GCM models (max {MAX_MODELS_PER_RUN} per run)", ALL_MODELS,
     default=["MPI-ESM1-2-HR", "EC-Earth3", "MIROC6"]
 )
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 start_year = col1.number_input("Start year", value=1984, min_value=1950, max_value=2014)
 end_year = col2.number_input("End year", value=2014, min_value=1950, max_value=2014)
-chunk_years = col3.number_input("Chunk size (years per request)", value=5, min_value=1, max_value=10)
+chunk_years = 1  # hardcoded - larger chunks were timing out
 
 if len(selected_models) > MAX_MODELS_PER_RUN:
     st.warning(f"Please select at most {MAX_MODELS_PER_RUN} models per run (Streamlit Cloud resource limits). "
