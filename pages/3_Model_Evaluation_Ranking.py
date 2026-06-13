@@ -422,4 +422,4 @@ if run_btn:
         st.download_button("Model_Metrics_PerStation.xlsx", to_excel_bytes(station_metrics_df), "Model_Metrics_PerStation.xlsx")
 
 st.markdown("---")
-st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
+st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
