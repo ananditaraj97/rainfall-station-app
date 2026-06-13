@@ -326,7 +326,7 @@ def fig_to_png_bytes(fig):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Representative Rainfall Station Generator", layout="wide")
-st.title("Representative Rainfall Station Generator")
+st.title("Historical IMD Station Extraction")
 st.caption("MODEL 1 — Tab 1: Generate representative rainfall stations from IMD 0.25° gridded data for any basin in India (Hybrid method).")
 
 with st.sidebar:
@@ -556,3 +556,6 @@ if run_btn:
     d5.download_button("Final_Stations.csv", final_table.to_csv(index=False).encode(), "Final_Stations.csv")
     d6.download_button("Representative_Stations_Rainfall.csv", rep_daily.to_csv(index=False).encode(),
                         "Representative_Stations_Rainfall.csv")
+
+st.markdown("---")
+st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
