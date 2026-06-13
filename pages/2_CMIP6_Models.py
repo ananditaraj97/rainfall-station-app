@@ -35,15 +35,31 @@ ALL_MODELS = [
 MAX_MODELS_PER_RUN = 3  # extracting 6 variables/model - keep runtime manageable
 
 # NEX-GDDP-CMIP6 bands -> SWAT-ready variable definitions
-# convert: function applied to the raw band value
-# agg: how to aggregate daily -> monthly ("sum" for precip, "mean" for everything else)
+# NEX-GDDP-CMIP6 bands available: huss, pr, rlds, rsds, sfcWind, tas, tasmax, tasmin
+# (no "hurs" relative-humidity band - it is derived from huss + tas below)
+#
+# gee_bands: raw band(s) needed from the image collection
+# compute:   function(dict of raw Series keyed by gee_band -> converted Series)
+# agg:       how to aggregate daily -> monthly ("sum" for precip, "mean" for everything else)
+def _rh_from_huss_tas(r):
+    """Approximate relative humidity (%) from specific humidity (huss, kg/kg) and
+    mean air temperature (tas, K), assuming standard sea-level pressure (101325 Pa)."""
+    huss = r["huss"].astype(float)
+    tas_c = r["tas"].astype(float) - 273.15
+    p = 101325.0
+    e = huss * p / (0.622 + 0.378 * huss)
+    es = 611.2 * np.exp(17.67 * tas_c / (tas_c + 243.5))
+    rh = 100.0 * e / es
+    return rh.clip(lower=0, upper=100)
+
+
 VARIABLES = {
-    "pr":      {"label": "Precipitation",     "unit": "mm/day",     "convert": lambda v: v * 86400.0, "agg": "sum",  "swat_file": "PCP"},
-    "tasmax":  {"label": "Max Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (max)"},
-    "tasmin":  {"label": "Min Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (min)"},
-    "hurs":    {"label": "Relative Humidity", "unit": "%",          "convert": lambda v: v,           "agg": "mean", "swat_file": "HMD"},
-    "sfcWind": {"label": "Wind Speed",        "unit": "m/s",        "convert": lambda v: v,           "agg": "mean", "swat_file": "WND"},
-    "rsds":    {"label": "Solar Radiation",   "unit": "MJ/m2/day",  "convert": lambda v: v * 0.0864,  "agg": "mean", "swat_file": "SLR"},
+    "pr":      {"gee_bands": ["pr"],            "compute": lambda r: r["pr"] * 86400.0,        "agg": "sum",  "label": "Precipitation",     "unit": "mm/day",    "swat_file": "PCP"},
+    "tasmax":  {"gee_bands": ["tasmax"],        "compute": lambda r: r["tasmax"] - 273.15,     "agg": "mean", "label": "Max Temperature",   "unit": "degC",      "swat_file": "TMP (max)"},
+    "tasmin":  {"gee_bands": ["tasmin"],        "compute": lambda r: r["tasmin"] - 273.15,     "agg": "mean", "label": "Min Temperature",   "unit": "degC",      "swat_file": "TMP (min)"},
+    "rh":      {"gee_bands": ["huss", "tas"],   "compute": _rh_from_huss_tas,                  "agg": "mean", "label": "Relative Humidity (approx., from huss+tas)", "unit": "%", "swat_file": "HMD"},
+    "sfcWind": {"gee_bands": ["sfcWind"],       "compute": lambda r: r["sfcWind"],             "agg": "mean", "label": "Wind Speed",        "unit": "m/s",       "swat_file": "WND"},
+    "rsds":    {"gee_bands": ["rsds"],          "compute": lambda r: r["rsds"] * 0.0864,       "agg": "mean", "label": "Solar Radiation",   "unit": "MJ/m2/day", "swat_file": "SLR"},
 }
 
 
@@ -82,7 +98,6 @@ def extract_chunk(model, scenario, start_date, end_date, station_fc, bands):
         return reduced.map(lambda f: f.set("date", date_str))
 
     flat = coll.map(reduce_image).flatten()
-    flat = flat.select(["date", "Station_ID"] + bands)
     return flat.getInfo()
 
 
@@ -109,7 +124,9 @@ def extract_model(model, scenario, start_year, end_year, station_fc, bands, chun
             props = feat["properties"]
             rec = {"Date": props["date"], "Station_ID": props["Station_ID"]}
             for b in bands:
-                rec[b] = props.get(b)
+                # EE quirk: reduceRegions(mean()) names the output property "mean"
+                # (not the band name) when only 1 band is selected.
+                rec[b] = props.get(b, props.get("mean"))
             all_records.append(rec)
 
         if progress_cb:
@@ -122,12 +139,15 @@ def extract_model(model, scenario, start_year, end_year, station_fc, bands, chun
     return df
 
 
-def pivot_variable(long_df, band):
-    """Pivot one band to Date x Station_ID, applying its unit conversion."""
-    conv = VARIABLES[band]["convert"]
-    d = long_df[["Date", "Station_ID", band]].copy()
-    d[band] = conv(d[band].astype(float))
-    pivot = d.pivot(index="Date", columns="Station_ID", values=band).reset_index()
+def pivot_variable(long_df, var_key):
+    """Pivot one derived variable to Date x Station_ID, applying its conversion/computation."""
+    gee_bands = VARIABLES[var_key]["gee_bands"]
+    compute = VARIABLES[var_key]["compute"]
+    r = {b: long_df[b] for b in gee_bands}
+    value = compute(r)
+    d = long_df[["Date", "Station_ID"]].copy()
+    d["__value__"] = value
+    pivot = d.pivot(index="Date", columns="Station_ID", values="__value__").reset_index()
     return pivot.sort_values("Date").reset_index(drop=True)
 
 
@@ -242,8 +262,9 @@ if run_btn:
         progress = st.progress(0.0)
         status = st.empty()
         try:
+            gee_bands_needed = sorted(set(b for v in selected_vars for b in VARIABLES[v]["gee_bands"]))
             long_df = extract_model(
-                model, "historical", int(start_year), int(end_year), station_fc, selected_vars, chunk_years,
+                model, "historical", int(start_year), int(end_year), station_fc, gee_bands_needed, chunk_years,
                 progress_cb=lambda frac, msg: (progress.progress(frac), status.write(msg))
             )
             var_outputs = {}
@@ -292,4 +313,4 @@ if run_btn:
                                        f"{base}_basin_monthly.xlsx", key=f"{model}_{band}_bm")
 
 st.markdown("---")
-st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
+st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
