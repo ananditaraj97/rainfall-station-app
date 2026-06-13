@@ -183,7 +183,7 @@ st.set_page_config(page_title="CMIP6 Climate Variable Extraction", layout="wide"
 inject_css()
 sidebar_branding()
 st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Climate Data Extraction")
-st.caption("MODEL 1 — Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
+st.caption("Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
            "historical precipitation AND the remaining SWAT-relevant variables (Tmax, Tmin, relative "
            "humidity, wind speed, solar radiation) for the representative stations, in the same "
            "Date x Station format as IMD, for R2/NSE comparison and SWAT weather-file generation (Tab 6).")
