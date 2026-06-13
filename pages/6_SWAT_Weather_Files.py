@@ -53,7 +53,7 @@ st.set_page_config(page_title="SWAT Weather Files & Delta Factors", layout="wide
 inject_css()
 sidebar_branding()
 st.title("SWAT Weather File Generator & Climate Change Delta Factors")
-st.caption("MODEL 1 — Tab 6: Convert daily CMIP6/IMD precipitation into SWAT-format .pcp files, "
+st.caption("Tab 6: Convert daily CMIP6/IMD precipitation into SWAT-format .pcp files, "
            "and compute monthly delta-change factors (% change) between historical and future "
            "precipitation for SWAT climate-change scenario runs.")
 
