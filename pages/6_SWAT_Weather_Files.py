@@ -1,151 +1,30 @@
 """
-Tab 2 - CMIP6 (NEX-GDDP-CMIP6) Historical Climate Variable Extraction via Google Earth Engine
+Tab 6 - SWAT Weather File Generator & Climate Change Delta Factors
 
-Extracts precipitation AND the remaining SWAT-relevant variables
-(Tmax, Tmin, relative humidity, wind speed, solar radiation) for the
-representative stations, converted to SWAT-ready units, in the same
-Date x Station format as Tab 1.
+Part A: converts a daily Date x Station precipitation file (from Tab 2
+historical or Tab 4 future projections) into SWAT-format .pcp text files
+(one per station), packaged as a downloadable zip.
 
-Uses a GEE service account stored in st.secrets["gee_service_account"]
-to authenticate without browser login.
+Part B: computes monthly climate-change delta factors (% change in
+precipitation by calendar month) between a historical baseline and a
+future projection - the standard "delta-change" input for SWAT scenario
+runs.
+
+SWAT PCP file format (per station):
+  line 1: start date as YYYYMMDD
+  line 2..: one daily precipitation value (mm), 2 decimal places
 """
 
 import io
-import time
+import os
 import zipfile
 
-import ee
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import streamlit as st
-
-# ============================================================
-# CONFIG
-# ============================================================
-ALL_MODELS = [
-    "ACCESS-CM2", "ACCESS-ESM1-5", "BCC-CSM2-MR", "CanESM5", "CESM2", "CESM2-WACCM",
-    "CMCC-CM2-SR5", "CMCC-ESM2", "CNRM-CM6-1", "CNRM-ESM2-1", "EC-Earth3",
-    "EC-Earth3-Veg-LR", "FGOALS-g3", "GFDL-CM4", "GFDL-ESM4", "GISS-E2-1-G",
-    "HadGEM3-GC31-LL", "HadGEM3-GC31-MM", "IITM-ESM", "INM-CM4-8", "INM-CM5-0",
-    "IPSL-CM6A-LR", "KACE-1-0-G", "KIOST-ESM", "MIROC-ES2L", "MIROC6",
-    "MPI-ESM1-2-HR", "MPI-ESM1-2-LR", "MRI-ESM2-0", "NESM3", "NorESM2-LM",
-    "NorESM2-MM", "TaiESM1", "UKESM1-0-LL",
-]
-
-MAX_MODELS_PER_RUN = 3  # extracting 6 variables/model - keep runtime manageable
-
-# NEX-GDDP-CMIP6 bands -> SWAT-ready variable definitions
-# convert: function applied to the raw band value
-# agg: how to aggregate daily -> monthly ("sum" for precip, "mean" for everything else)
-VARIABLES = {
-    "pr":      {"label": "Precipitation",     "unit": "mm/day",     "convert": lambda v: v * 86400.0, "agg": "sum",  "swat_file": "PCP"},
-    "tasmax":  {"label": "Max Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (max)"},
-    "tasmin":  {"label": "Min Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (min)"},
-    "hurs":    {"label": "Relative Humidity", "unit": "%",          "convert": lambda v: v,           "agg": "mean", "swat_file": "HMD"},
-    "sfcWind": {"label": "Wind Speed",        "unit": "m/s",        "convert": lambda v: v,           "agg": "mean", "swat_file": "WND"},
-    "rsds":    {"label": "Solar Radiation",   "unit": "MJ/m2/day",  "convert": lambda v: v * 0.0864,  "agg": "mean", "swat_file": "SLR"},
-}
-
-
-# ============================================================
-# EE INIT (service account from st.secrets)
-# ============================================================
-@st.cache_resource(show_spinner=False)
-def init_earth_engine():
-    if "gee_service_account" not in st.secrets:
-        raise RuntimeError(
-            "No 'gee_service_account' found in st.secrets. "
-            "Add the service account JSON fields under [gee_service_account] in app secrets."
-        )
-    sa_info = {k: str(v) for k, v in dict(st.secrets["gee_service_account"]).items()}
-    from google.oauth2 import service_account
-    credentials = service_account.Credentials.from_service_account_info(
-        sa_info, scopes=["https://www.googleapis.com/auth/earthengine"]
-    )
-    ee.Initialize(credentials, project=sa_info.get("project_id"))
-    return True
-
-
-# ============================================================
-# EXTRACTION
-# ============================================================
-def extract_chunk(model, scenario, start_date, end_date, station_fc, bands):
-    coll = (ee.ImageCollection("NASA/GDDP-CMIP6")
-            .filter(ee.Filter.eq("model", model))
-            .filter(ee.Filter.eq("scenario", scenario))
-            .filterDate(start_date, end_date)
-            .select(bands))
-
-    def reduce_image(img):
-        date_str = img.date().format("YYYY-MM-dd")
-        reduced = img.reduceRegions(collection=station_fc, reducer=ee.Reducer.mean(), scale=27830)
-        return reduced.map(lambda f: f.set("date", date_str))
-
-    flat = coll.map(reduce_image).flatten()
-    flat = flat.select(["date", "Station_ID"] + bands)
-    return flat.getInfo()
-
-
-def extract_model(model, scenario, start_year, end_year, station_fc, bands, chunk_years=1, progress_cb=None):
-    """Returns a long DataFrame: Date, Station_ID, <band1>, <band2>, ... (raw values, unconverted)."""
-    all_records = []
-    years = list(range(start_year, end_year + 1, chunk_years))
-    total_chunks = len(years)
-
-    for idx, year in enumerate(years):
-        chunk_end = min(year + chunk_years - 1, end_year)
-        start_date, end_date = f"{year}-01-01", f"{chunk_end}-12-31"
-
-        for attempt in range(3):
-            try:
-                result = extract_chunk(model, scenario, start_date, end_date, station_fc, bands)
-                break
-            except Exception as e:
-                if attempt == 2:
-                    raise RuntimeError(f"{model} {start_date}-{end_date} failed after retries: {e}")
-                time.sleep(5)
-
-        for feat in result["features"]:
-            props = feat["properties"]
-            rec = {"Date": props["date"], "Station_ID": props["Station_ID"]}
-            for b in bands:
-                rec[b] = props.get(b)
-            all_records.append(rec)
-
-        if progress_cb:
-            progress_cb((idx + 1) / total_chunks, f"{model}: {start_date} to {end_date}")
-
-    df = pd.DataFrame(all_records)
-    if df.empty:
-        raise RuntimeError(f"No data returned for model {model}. It may not have global coverage at these points.")
-    df["Date"] = pd.to_datetime(df["Date"])
-    return df
-
-
-def pivot_variable(long_df, band):
-    """Pivot one band to Date x Station_ID, applying its unit conversion."""
-    conv = VARIABLES[band]["convert"]
-    d = long_df[["Date", "Station_ID", band]].copy()
-    d[band] = conv(d[band].astype(float))
-    pivot = d.pivot(index="Date", columns="Station_ID", values=band).reset_index()
-    return pivot.sort_values("Date").reset_index(drop=True)
-
-
-def build_monthly_and_basin(daily_df, agg="sum"):
-    """From a Date x Station daily DataFrame, build monthly (Year, Month, stations)
-    and basin-average monthly (Year, Month, Basin_Value)."""
-    station_cols = [c for c in daily_df.columns if c != "Date"]
-    d = daily_df.copy()
-    d["Year"] = d["Date"].dt.year
-    d["Month"] = d["Date"].dt.month
-    if agg == "sum":
-        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
-    else:
-        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].mean().reset_index()
-
-    basin_monthly = monthly[["Year", "Month"]].copy()
-    basin_monthly["Basin_Value"] = monthly[station_cols].mean(axis=1)
-    return monthly, basin_monthly
 
 
 def to_excel_bytes(df):
@@ -155,141 +34,250 @@ def to_excel_bytes(df):
     return buf.getvalue()
 
 
+def fig_to_png_bytes(fig):
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
 # ============================================================
 # UI
 # ============================================================
-st.set_page_config(page_title="CMIP6 Climate Variable Extraction", layout="wide")
-st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Climate Data Extraction")
-st.caption("MODEL 1 — Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
-           "historical precipitation AND the remaining SWAT-relevant variables (Tmax, Tmin, relative "
-           "humidity, wind speed, solar radiation) for the representative stations, in the same "
-           "Date x Station format as IMD, for R2/NSE comparison and SWAT weather-file generation (Tab 6).")
+st.set_page_config(page_title="SWAT Weather Files & Delta Factors", layout="wide")
+st.title("SWAT Weather File Generator & Climate Change Delta Factors")
+st.caption("MODEL 1 — Tab 6: Convert daily CMIP6/IMD precipitation into SWAT-format .pcp files, "
+           "and compute monthly delta-change factors (% change) between historical and future "
+           "precipitation for SWAT climate-change scenario runs.")
 
-st.subheader("1. Stations")
-station_input_mode = st.radio("Provide station locations", ["Upload Final_Stations.xlsx", "Enter manually"])
+# ================================================================
+# PART A: SWAT WEATHER FILE GENERATOR
+# ================================================================
+st.header("A. SWAT weather file generator")
+st.caption("Generate SWAT-format weather files (PCP, TMP, HMD, WND, SLR) from CMIP6/IMD daily data. "
+           "Two options: a single precipitation file (PCP only), or the full "
+           "`..._all_variables.zip` from Tab 2/Tab 4 (all 5 SWAT files at once).")
 
-stations_df = None
-if station_input_mode == "Upload Final_Stations.xlsx":
-    f = st.file_uploader("Final_Stations.xlsx (from Tab 1)", type=["xlsx"])
-    if f is not None:
-        raw = pd.read_excel(f)
-        col_map = {c.lower(): c for c in raw.columns}
-        required = ["station_id", "latitude", "longitude"]
-        missing = [r for r in required if r not in col_map]
-        if missing:
-            st.error(
-                f"Uploaded file is missing required column(s): {missing}. "
-                f"Found columns: {list(raw.columns)}. "
-                f"Make sure you uploaded Final_Stations.xlsx (with Station_ID, Latitude, Longitude columns), "
-                f"not the rainfall data file."
-            )
-        else:
-            stations_df = raw[[col_map["station_id"], col_map["latitude"], col_map["longitude"]]]
-            stations_df.columns = ["Station_ID", "Latitude", "Longitude"]
-            st.dataframe(stations_df, hide_index=True)
-else:
-    default_text = "Station_ID,Latitude,Longitude\nST001,18.50,73.75\nST002,17.00,77.00"
-    text = st.text_area("CSV: Station_ID,Latitude,Longitude", value=default_text, height=150)
-    try:
-        stations_df = pd.read_csv(io.StringIO(text))
-        st.dataframe(stations_df, hide_index=True)
-    except Exception as e:
-        st.error(f"Could not parse station list: {e}")
+SWAT_VAR_MAP = {
+    "pr": "pcp", "hurs": "hmd", "sfcWind": "wnd", "rsds": "slr",
+}
 
-st.subheader("2. Variables, models & period")
-var_options = {f"{k} - {v['label']} ({v['unit']})": k for k, v in VARIABLES.items()}
-selected_var_labels = st.multiselect(
-    "Variables to extract (default: all 6, for SWAT PCP/TMP/HMD/WND/SLR)",
-    list(var_options.keys()), default=list(var_options.keys())
-)
-selected_vars = [var_options[lbl] for lbl in selected_var_labels]
+a_mode = st.radio("Input type", ["Single precipitation file (PCP only)", "all_variables.zip (full weather set)"])
 
-selected_models = st.multiselect(
-    f"GCM models (max {MAX_MODELS_PER_RUN} per run)", ALL_MODELS,
-    default=["MPI-ESM1-2-HR"]
-)
-col1, col2 = st.columns(2)
-start_year = col1.number_input("Start year", value=1984, min_value=1950, max_value=2014)
-end_year = col2.number_input("End year", value=2014, min_value=1950, max_value=2014)
-chunk_years = 1  # hardcoded - larger chunks were timing out
 
-if len(selected_models) > MAX_MODELS_PER_RUN:
-    st.warning(f"Please select at most {MAX_MODELS_PER_RUN} models per run (Streamlit Cloud resource limits). "
-               f"Run remaining models in a separate run.")
+def align_daily(df):
+    """Sort, fill missing dates with 0, return df + start date string + station columns."""
+    station_cols = [c for c in df.columns if c != "Date"]
+    df = df.sort_values("Date").reset_index(drop=True)
+    full_range = pd.date_range(df["Date"].min(), df["Date"].max(), freq="D")
+    missing = full_range.difference(df["Date"])
+    if len(missing) > 0:
+        df = df.set_index("Date").reindex(full_range).reset_index().rename(columns={"index": "Date"})
+    start_date_str = df["Date"].iloc[0].strftime("%Y%m%d")
+    return df, start_date_str, station_cols
 
-run_disabled = (
-    stations_df is None or not selected_vars or len(selected_models) == 0 or len(selected_models) > MAX_MODELS_PER_RUN
-)
-run_btn = st.button("Extract CMIP6 data", type="primary", disabled=run_disabled)
 
-if run_btn:
-    with st.spinner("Connecting to Earth Engine..."):
-        try:
-            init_earth_engine()
-        except Exception as e:
-            st.error(f"Earth Engine init failed: {e}")
+def single_value_files(df, station_cols, start_date_str, prefix):
+    """One value per line, 2dp. Returns dict filename -> text content."""
+    files = {}
+    for i, station in enumerate(station_cols):
+        lines = [start_date_str] + [f"{v:.2f}" for v in df[station].fillna(0).values]
+        files[f"{prefix}{i+1}.txt"] = "\n".join(lines) + "\n"
+    return files
+
+
+def tmp_files(tmax_df, tmin_df, station_cols, start_date_str):
+    """TMAX,TMIN comma-separated pairs per line."""
+    files = {}
+    for i, station in enumerate(station_cols):
+        tmax_vals = tmax_df[station].fillna(0).values
+        tmin_vals = tmin_df[station].fillna(0).values
+        lines = [start_date_str] + [f"{a:.2f},{b:.2f}" for a, b in zip(tmax_vals, tmin_vals)]
+        files[f"tmp{i+1}.txt"] = "\n".join(lines) + "\n"
+    return files
+
+
+if a_mode == "Single precipitation file (PCP only)":
+    st.caption("Upload a daily Date x Station precipitation file (e.g. "
+               "Representative_Stations_Rainfall.xlsx from Tab 1, or `..._pr_..._daily.xlsx` "
+               "from Tab 2/Tab 4).")
+    daily_file = st.file_uploader("Daily precipitation file (Date + station columns)", type=["xlsx"], key="pcp_upload")
+
+    if daily_file is not None:
+        df = pd.read_excel(daily_file, parse_dates=["Date"])
+        if "Date" not in df.columns:
+            st.error("File must contain a 'Date' column.")
             st.stop()
 
-    station_features = [
-        ee.Feature(ee.Geometry.Point([row["Longitude"], row["Latitude"]]), {"Station_ID": row["Station_ID"]})
-        for _, row in stations_df.iterrows()
-    ]
-    station_fc = ee.FeatureCollection(station_features)
+        df, start_date_str, station_cols = align_daily(df)
+        st.info(f"{len(station_cols)} station(s), {len(df)} days, start date {start_date_str}")
 
-    model_outputs = {}  # model -> {var: (daily, monthly, basin_monthly)}
-    for model in selected_models:
-        st.write(f"**Extracting {model}**")
-        progress = st.progress(0.0)
-        status = st.empty()
-        try:
-            long_df = extract_model(
-                model, "historical", int(start_year), int(end_year), station_fc, selected_vars, chunk_years,
-                progress_cb=lambda frac, msg: (progress.progress(frac), status.write(msg))
-            )
-            var_outputs = {}
-            for band in selected_vars:
-                daily = pivot_variable(long_df, band)
-                monthly, basin_monthly = build_monthly_and_basin(daily, agg=VARIABLES[band]["agg"])
-                var_outputs[band] = (daily, monthly, basin_monthly)
-            model_outputs[model] = var_outputs
-            progress.progress(1.0)
-            status.write(f"Done: {long_df['Date'].nunique()} days x {len(stations_df)} stations, "
-                         f"{len(selected_vars)} variable(s)")
-        except Exception as e:
-            st.error(f"{model} failed: {e}")
+        mapping = pd.DataFrame({
+            "Station_ID": station_cols,
+            "PCP_File": [f"pcp{i+1}.txt" for i in range(len(station_cols))],
+        })
+        st.dataframe(mapping, hide_index=True)
 
-    if model_outputs:
-        st.subheader("3. Results & downloads")
-        st.caption("Each model is provided per variable in daily / monthly / basin-monthly formats "
-                   "(same convention as Tab 1 IMD outputs). Precipitation aggregates by sum; "
-                   "temperature, humidity, wind, and solar radiation aggregate by mean. "
-                   "Download a single zip per model for use in Tab 3 (evaluation) and Tab 6 "
-                   "(SWAT weather files).")
+        if st.button("Generate SWAT .pcp files (zip)", type="primary"):
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fname, content in single_value_files(df, station_cols, start_date_str, "pcp").items():
+                    zf.writestr(fname, content)
+                mapping_buf = io.BytesIO()
+                with pd.ExcelWriter(mapping_buf, engine="openpyxl") as writer:
+                    mapping.to_excel(writer, index=False)
+                zf.writestr("pcp_station_mapping.xlsx", mapping_buf.getvalue())
+            buf.seek(0)
+            st.download_button("Download SWAT_PCP_files.zip", buf.getvalue(), "SWAT_PCP_files.zip")
+            st.success(f"Generated {len(station_cols)} .pcp file(s), {len(df)} days each.")
 
-        for model, var_outputs in model_outputs.items():
-            with st.expander(f"{model}"):
-                # quick preview: precipitation if available, else first variable
-                preview_var = "pr" if "pr" in var_outputs else selected_vars[0]
-                st.dataframe(var_outputs[preview_var][0].head(), hide_index=True)
+else:
+    st.caption("Upload the `<model>_..._all_variables.zip` downloaded from Tab 2 (historical) or "
+               "Tab 4 (future) for ONE model. This contains daily files for all extracted "
+               "variables (pr, tasmax, tasmin, hurs, sfcWind, rsds).")
+    var_zip = st.file_uploader("all_variables.zip", type=["zip"], key="swat_zip_upload")
 
-                # build a single zip with all variables x all formats
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for band, (daily, monthly, basin_monthly) in var_outputs.items():
-                        base = f"CMIP6_{model}_{band}_{start_year}-{end_year}"
-                        zf.writestr(f"{base}_daily.xlsx", to_excel_bytes(daily))
-                        zf.writestr(f"{base}_monthly.xlsx", to_excel_bytes(monthly))
-                        zf.writestr(f"{base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly))
-                zip_buf.seek(0)
-                st.download_button(f"Download {model}_{start_year}-{end_year}_all_variables.zip",
-                                    zip_buf.getvalue(), f"{model}_{start_year}-{end_year}_all_variables.zip")
+    if var_zip is not None:
+        import re as _re
+        tmpdir_buf = io.BytesIO(var_zip.getvalue())
+        zf_in = zipfile.ZipFile(tmpdir_buf)
 
-                # per-variable basin_monthly quick downloads
-                cols = st.columns(len(var_outputs))
-                for c, (band, (daily, monthly, basin_monthly)) in zip(cols, var_outputs.items()):
-                    base = f"CMIP6_{model}_{band}_{start_year}-{end_year}"
-                    c.download_button(f"{band}_basin_monthly.xlsx", to_excel_bytes(basin_monthly),
-                                       f"{base}_basin_monthly.xlsx", key=f"{model}_{band}_bm")
+        # find daily files per variable: CMIP6_<model>_<var>_..._daily.xlsx
+        var_daily = {}
+        for name in zf_in.namelist():
+            if not name.endswith("_daily.xlsx"):
+                continue
+            m = _re.match(r"CMIP6_.+?_(pr|tasmax|tasmin|hurs|sfcWind|rsds)_.*_daily\.xlsx", name)
+            if not m:
+                continue
+            band = m.group(1)
+            var_daily[band] = pd.read_excel(io.BytesIO(zf_in.read(name)), parse_dates=["Date"])
+
+        if not var_daily:
+            st.error("No recognised `<var>_..._daily.xlsx` files found in the zip.")
+        else:
+            found = list(var_daily.keys())
+            st.success(f"Found daily data for: {', '.join(found)}")
+
+            # use station columns from the first available variable as the canonical order
+            ref_band = found[0]
+            ref_df, start_date_str, station_cols = align_daily(var_daily[ref_band])
+
+            mapping_rows = []
+            files = {}
+
+            if "pr" in var_daily:
+                df_pr, sds, scols = align_daily(var_daily["pr"])
+                files.update(single_value_files(df_pr, scols, sds, "pcp"))
+                for i, s in enumerate(scols):
+                    mapping_rows.append({"Station_ID": s, "SWAT_File": f"pcp{i+1}.txt", "Variable": "Precipitation (PCP)"})
+
+            if "tasmax" in var_daily and "tasmin" in var_daily:
+                df_tmax, sds, scols = align_daily(var_daily["tasmax"])
+                df_tmin, _, _ = align_daily(var_daily["tasmin"])
+                files.update(tmp_files(df_tmax, df_tmin, scols, sds))
+                for i, s in enumerate(scols):
+                    mapping_rows.append({"Station_ID": s, "SWAT_File": f"tmp{i+1}.txt", "Variable": "Temperature TMAX,TMIN (TMP)"})
+            elif "tasmax" in var_daily or "tasmin" in var_daily:
+                st.warning("Both tasmax AND tasmin are needed for the SWAT .tmp file - only one was found, skipping TMP.")
+
+            for band, swat_prefix in [("hurs", "hmd"), ("sfcWind", "wnd"), ("rsds", "slr")]:
+                if band in var_daily:
+                    df_v, sds, scols = align_daily(var_daily[band])
+                    files.update(single_value_files(df_v, scols, sds, swat_prefix))
+                    label = {"hurs": "Relative Humidity (HMD)", "sfcWind": "Wind Speed (WND)", "rsds": "Solar Radiation (SLR)"}[band]
+                    for i, s in enumerate(scols):
+                        mapping_rows.append({"Station_ID": s, "SWAT_File": f"{swat_prefix}{i+1}.txt", "Variable": label})
+
+            mapping = pd.DataFrame(mapping_rows)
+            st.dataframe(mapping, hide_index=True, use_container_width=True)
+            st.info(f"{len(station_cols)} station(s), {len(ref_df)} days, start date {start_date_str}, "
+                    f"{len(files)} SWAT file(s) will be generated.")
+
+            if st.button("Generate SWAT weather files (zip)", type="primary"):
+                buf = io.BytesIO()
+                with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fname, content in files.items():
+                        zf.writestr(fname, content)
+                    mapping_buf = io.BytesIO()
+                    with pd.ExcelWriter(mapping_buf, engine="openpyxl") as writer:
+                        mapping.to_excel(writer, index=False)
+                    zf.writestr("swat_station_mapping.xlsx", mapping_buf.getvalue())
+                buf.seek(0)
+                st.download_button("Download SWAT_weather_files.zip", buf.getvalue(), "SWAT_weather_files.zip")
+                st.success(f"Generated {len(files)} SWAT weather file(s).")
+
+st.markdown("---")
+
+# ================================================================
+# PART B: CLIMATE CHANGE DELTA FACTORS
+# ================================================================
+st.header("B. Climate change delta factors (% change by month)")
+st.caption("Upload a historical baseline (e.g. Basin_Monthly_Rainfall.xlsx from Tab 1, or a "
+           "historical CMIP6 `..._basin_monthly.xlsx` from Tab 2) and a future projection "
+           "(`..._basin_monthly.xlsx` from Tab 4). Delta factor for each calendar month = "
+           "100 x (Future_mean - Historical_mean) / Historical_mean.")
+
+c1, c2 = st.columns(2)
+hist_file = st.file_uploader("Historical basin-monthly file (Year, Month, Basin_Rainfall_mm)", type=["xlsx"], key="hist_delta")
+fut_file = st.file_uploader("Future basin-monthly file (Year, Month, Basin_Rainfall_mm)", type=["xlsx"], key="fut_delta")
+
+run_delta = st.button("Compute delta factors", type="primary", disabled=(hist_file is None or fut_file is None))
+
+if run_delta:
+    hist_df = pd.read_excel(hist_file)
+    fut_df = pd.read_excel(fut_file)
+
+    for name, d in [("Historical", hist_df), ("Future", fut_df)]:
+        if not {"Year", "Month", "Basin_Rainfall_mm"}.issubset(d.columns):
+            st.error(f"{name} file must have columns Year, Month, Basin_Rainfall_mm. Found: {list(d.columns)}")
+            st.stop()
+
+    hist_clim = hist_df.groupby("Month")["Basin_Rainfall_mm"].mean()
+    fut_clim = fut_df.groupby("Month")["Basin_Rainfall_mm"].mean()
+
+    delta_table = pd.DataFrame({
+        "Month": range(1, 13),
+        "Month_Name": MONTH_NAMES,
+        "Historical_Mean_mm": [hist_clim.get(m, np.nan) for m in range(1, 13)],
+        "Future_Mean_mm": [fut_clim.get(m, np.nan) for m in range(1, 13)],
+    })
+    delta_table["Delta_Percent"] = 100 * (delta_table["Future_Mean_mm"] - delta_table["Historical_Mean_mm"]) / delta_table["Historical_Mean_mm"]
+    delta_table["Delta_Factor"] = 1 + delta_table["Delta_Percent"] / 100  # multiplier: Future = Historical x Delta_Factor
+
+    st.subheader("Delta factors table")
+    st.dataframe(delta_table, hide_index=True, use_container_width=True)
+
+    annual_hist = hist_df.groupby("Year")["Basin_Rainfall_mm"].sum(min_count=1).mean()
+    annual_fut = fut_df.groupby("Year")["Basin_Rainfall_mm"].sum(min_count=1).mean()
+    annual_delta = 100 * (annual_fut - annual_hist) / annual_hist
+    st.metric("Annual mean rainfall change", f"{annual_delta:+.1f}%",
+              help=f"Historical: {annual_hist:.1f} mm/yr, Future: {annual_fut:.1f} mm/yr")
+
+    # ---- plot ----
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    colors = ["#d62728" if v < 0 else "#2e8b57" for v in delta_table["Delta_Percent"]]
+    ax.bar(delta_table["Month_Name"], delta_table["Delta_Percent"], color=colors)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_ylabel("Change in mean monthly rainfall (%)")
+    ax.set_title("Climate change delta factors (Future vs Historical)")
+    fig.tight_layout()
+    st.pyplot(fig)
+    st.download_button("Download delta_factors_chart.png", fig_to_png_bytes(fig), "delta_factors_chart.png")
+
+    st.download_button("Download Delta_Factors.xlsx", to_excel_bytes(delta_table), "Delta_Factors.xlsx")
+
+    st.caption(
+        "To apply: multiply each day's historical precipitation in the corresponding calendar month "
+        "by Delta_Factor to obtain a delta-perturbed future daily series for SWAT (delta-change method). "
+        "For quantile-mapping bias correction instead of simple delta-change, use the historical "
+        "IMD vs historical CMIP6 series from Tabs 1-2 to derive correction functions, then apply "
+        "them to the future series before generating .pcp files in Part A."
+    )
 
 st.markdown("---")
 st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
