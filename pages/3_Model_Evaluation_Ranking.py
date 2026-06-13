@@ -20,6 +20,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 
 
 # ============================================================
@@ -190,6 +191,8 @@ def load_and_classify_all(uploaded_files, zip_file):
 # UI
 # ============================================================
 st.set_page_config(page_title="CMIP6 Model Evaluation & Ranking", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("CMIP6 Model Evaluation & Ranking")
 st.caption("MODEL 1 — Tab 3: Compare NEX-GDDP-CMIP6 bias-corrected, downscaled precipitation against "
            "IMD observed rainfall (R2, NSE, RMSE, MAE, PBIAS, KGE), rank models, and view comparison plots.")
@@ -421,5 +424,4 @@ if run_btn:
     if station_metrics_df is not None:
         st.download_button("Model_Metrics_PerStation.xlsx", to_excel_bytes(station_metrics_df), "Model_Metrics_PerStation.xlsx")
 
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+footer()
