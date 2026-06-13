@@ -10,12 +10,12 @@ ACCENT = "#c1622d"
 LIGHT_BG = "#f5f6f8"
 
 # Edit these two lines to change the sidebar branding text.
-APP_TITLE = "Bhima Basin Climate Toolkit"
+APP_TITLE = " Basin Climate & SWAT Data Portal"
 APP_SUBTITLE = "IMD &middot; CMIP6 &middot; SWAT DATA PLATFORM"
 
 # (label shown in custom nav, path to the page file)
 NAV_PAGES = [
-    ("Home / IMD Station Extraction", "app.py"),
+    ("IMD Station Extraction", "app.py"),
     ("CMIP6 Models", "pages/2_CMIP6_Models.py"),
     ("Model Evaluation & Ranking", "pages/3_Model_Evaluation_Ranking.py"),
     ("Future Climate Projections", "pages/4_Future_Climate_Projections.py"),
