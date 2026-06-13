@@ -194,7 +194,7 @@ st.set_page_config(page_title="CMIP6 Model Evaluation & Ranking", layout="wide")
 inject_css()
 sidebar_branding()
 st.title("CMIP6 Model Evaluation & Ranking")
-st.caption("MODEL 1 — Tab 3: Compare NEX-GDDP-CMIP6 bias-corrected, downscaled precipitation against "
+st.caption("Tab 3: Compare NEX-GDDP-CMIP6 bias-corrected, downscaled precipitation against "
            "IMD observed rainfall (R2, NSE, RMSE, MAE, PBIAS, KGE), rank models, and view comparison plots.")
 
 st.subheader("1. Data — IMD + CMIP6 models")
