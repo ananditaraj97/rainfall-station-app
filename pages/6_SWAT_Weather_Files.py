@@ -25,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 
 
 def to_excel_bytes(df):
@@ -49,6 +50,8 @@ MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 # UI
 # ============================================================
 st.set_page_config(page_title="SWAT Weather Files & Delta Factors", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("SWAT Weather File Generator & Climate Change Delta Factors")
 st.caption("MODEL 1 — Tab 6: Convert daily CMIP6/IMD precipitation into SWAT-format .pcp files, "
            "and compute monthly delta-change factors (% change) between historical and future "
@@ -279,5 +282,4 @@ if run_delta:
         "them to the future series before generating .pcp files in Part A."
     )
 
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+footer()
