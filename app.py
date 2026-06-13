@@ -25,6 +25,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 import gdown
 
 # ============================================================
@@ -326,6 +327,8 @@ def fig_to_png_bytes(fig):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Representative Rainfall Station Generator", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("Historical IMD Station Extraction")
 st.caption("MODEL 1 — Tab 1: Generate representative rainfall stations from IMD 0.25° gridded data for any basin in India (Hybrid method).")
 
@@ -558,62 +561,6 @@ if run_btn:
                         "Representative_Stations_Rainfall.csv")
 
 st.markdown("---")
-
-# ================================================================
-# ABOUT THIS APPLICATION
-# ================================================================
-st.header("About this application")
-st.markdown(
-"""
-This application provides an open-source, reproducible workflow for extracting, evaluating, and
-preparing climate data for hydrological climate-change impact assessment in Indian river basins,
-developed for the Bhima River Basin (~69,447 km², Maharashtra–Karnataka, India) and applicable to
-any basin given a representative station network.
-
-### Modules
-
-- **1. IMD Station Extraction** — generates a network of basin-representative rainfall stations
-  from the IMD 0.25° gridded daily rainfall product using a hybrid area / distance / correlation
-  filtering and K-means clustering procedure, and computes basin-average rainfall.
-- **2. CMIP6 Models** — extracts historical (1984–2014) precipitation, temperature (max/min),
-  relative humidity, wind speed, and solar radiation for the representative stations from the
-  NASA NEX-GDDP-CMIP6 archive via Google Earth Engine.
-- **3. Model Evaluation & Ranking** — compares CMIP6 model precipitation against IMD observations
-  using R², NSE, KGE, RMSE, MAE, PBIAS, and IOA, and produces a composite ranking with diagnostic
-  plots (Taylor diagram, scatter plots, time series, climatology).
-- **4. Future Climate Projections** — extracts the same six variables under SSP2-4.5 / SSP5-8.5
-  scenarios for standard time slices (Near/Mid/Far future), with station maps and climatology plots.
-- **5. Ensemble & Uncertainty Analysis** — combines multiple model projections into mean/median
-  ensembles with percentile uncertainty bands (P5–P95), fan plots, boxplots, and violin plots.
-- **6. SWAT Weather Files & Delta Factors** — converts daily climate data into SWAT-format weather
-  files (PCP, TMP, HMD, WND, SLR) and computes monthly delta-change factors between historical and
-  future precipitation for SWAT climate-change scenario runs.
-
-### Data sources
-
-- **IMD gridded rainfall** (0.25°, daily) — India Meteorological Department, Pune.
-- **NEX-GDDP-CMIP6** — NASA Earth Exchange Global Daily Downscaled Projections, bias-corrected and
-  statistically downscaled CMIP6 output, accessed via the Google Earth Engine data catalogue
-  (`NASA/GDDP-CMIP6`).
-
-### Notes and limitations
-
-- Relative humidity is not directly available in NEX-GDDP-CMIP6 and is approximated from specific
-  humidity and mean air temperature assuming standard sea-level pressure; this is a reasonable
-  approximation for SWAT forcing but introduces additional uncertainty relative to a directly
-  observed/modelled relative humidity field.
-- All evaluation results are basin-average comparisons against a single observational reference
-  (IMD) and do not capture within-basin spatial pattern errors.
-- This tool is intended to support GCM screening and SWAT input preparation for research use;
-  results should be reviewed alongside the accompanying methodology before use in formal impact
-  assessments.
-
-### Source code
-
-The complete source code for this application is available at
-[github.com/ananditaraj97/rainfall-station-app](https://github.com/ananditaraj97/rainfall-station-app).
-"""
-)
-
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+st.info("For an overview of all modules, data sources, and notes/limitations, see the "
+        "**Documentation** page in the sidebar.")
+footer()
