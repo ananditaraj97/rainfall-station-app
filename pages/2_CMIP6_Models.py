@@ -136,10 +136,11 @@ def build_monthly_and_basin(daily_df):
 # ============================================================
 # UI
 # ============================================================
-st.set_page_config(page_title="CMIP6 GCM Extraction", layout="wide")
-st.title("CMIP6 (NEX-GDDP-CMIP6) Historical Rainfall Extraction")
-st.caption("MODEL 1 — Tab 2: Download GCM historical precipitation for the representative stations, "
-           "converted to mm/day, same Date x Station format as IMD for R2/NSE comparison.")
+st.set_page_config(page_title="CMIP6 Downscaled Precipitation Extraction", layout="wide")
+st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Rainfall Extraction")
+st.caption("MODEL 1 — Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
+           "historical precipitation for the representative stations, converted to mm/day, "
+           "same Date x Station format as IMD for R2/NSE comparison.")
 
 st.subheader("1. Stations")
 station_input_mode = st.radio("Provide station locations", ["Upload Final_Stations.xlsx", "Enter manually"])
