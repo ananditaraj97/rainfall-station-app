@@ -1,13 +1,18 @@
 """
-Tab 2 - CMIP6 (NEX-GDDP-CMIP6) Precipitation Extraction via Google Earth Engine
+Tab 2 - CMIP6 (NEX-GDDP-CMIP6) Historical Climate Variable Extraction via Google Earth Engine
 
-Streamlit page (multi-page app). Uses a GEE service account stored in
-st.secrets["gee_service_account"] to authenticate without browser login.
+Extracts precipitation AND the remaining SWAT-relevant variables
+(Tmax, Tmin, relative humidity, wind speed, solar radiation) for the
+representative stations, converted to SWAT-ready units, in the same
+Date x Station format as Tab 1.
+
+Uses a GEE service account stored in st.secrets["gee_service_account"]
+to authenticate without browser login.
 """
 
 import io
-import json
 import time
+import zipfile
 
 import ee
 import numpy as np
@@ -27,8 +32,19 @@ ALL_MODELS = [
     "NorESM2-MM", "TaiESM1", "UKESM1-0-LL",
 ]
 
-PR_UNIT_TO_MM_DAY = 86400.0  # kg/m2/s -> mm/day
-MAX_MODELS_PER_RUN = 5  # keep runtime manageable on Streamlit Cloud
+MAX_MODELS_PER_RUN = 3  # extracting 6 variables/model - keep runtime manageable
+
+# NEX-GDDP-CMIP6 bands -> SWAT-ready variable definitions
+# convert: function applied to the raw band value
+# agg: how to aggregate daily -> monthly ("sum" for precip, "mean" for everything else)
+VARIABLES = {
+    "pr":      {"label": "Precipitation",     "unit": "mm/day",     "convert": lambda v: v * 86400.0, "agg": "sum",  "swat_file": "PCP"},
+    "tasmax":  {"label": "Max Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (max)"},
+    "tasmin":  {"label": "Min Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (min)"},
+    "hurs":    {"label": "Relative Humidity", "unit": "%",          "convert": lambda v: v,           "agg": "mean", "swat_file": "HMD"},
+    "sfcWind": {"label": "Wind Speed",        "unit": "m/s",        "convert": lambda v: v,           "agg": "mean", "swat_file": "WND"},
+    "rsds":    {"label": "Solar Radiation",   "unit": "MJ/m2/day",  "convert": lambda v: v * 0.0864,  "agg": "mean", "swat_file": "SLR"},
+}
 
 
 # ============================================================
@@ -41,7 +57,6 @@ def init_earth_engine():
             "No 'gee_service_account' found in st.secrets. "
             "Add the service account JSON fields under [gee_service_account] in app secrets."
         )
-    # ensure everything is plain str (st.secrets values can be AttrDict-wrapped)
     sa_info = {k: str(v) for k, v in dict(st.secrets["gee_service_account"]).items()}
     from google.oauth2 import service_account
     credentials = service_account.Credentials.from_service_account_info(
@@ -54,12 +69,12 @@ def init_earth_engine():
 # ============================================================
 # EXTRACTION
 # ============================================================
-def extract_model_chunk(model, scenario, start_date, end_date, station_fc):
+def extract_chunk(model, scenario, start_date, end_date, station_fc, bands):
     coll = (ee.ImageCollection("NASA/GDDP-CMIP6")
             .filter(ee.Filter.eq("model", model))
             .filter(ee.Filter.eq("scenario", scenario))
             .filterDate(start_date, end_date)
-            .select("pr"))
+            .select(bands))
 
     def reduce_image(img):
         date_str = img.date().format("YYYY-MM-dd")
@@ -67,11 +82,12 @@ def extract_model_chunk(model, scenario, start_date, end_date, station_fc):
         return reduced.map(lambda f: f.set("date", date_str))
 
     flat = coll.map(reduce_image).flatten()
-    flat = flat.select(["date", "Station_ID", "mean"])
+    flat = flat.select(["date", "Station_ID"] + bands)
     return flat.getInfo()
 
 
-def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years, progress_cb=None):
+def extract_model(model, scenario, start_year, end_year, station_fc, bands, chunk_years=1, progress_cb=None):
+    """Returns a long DataFrame: Date, Station_ID, <band1>, <band2>, ... (raw values, unconverted)."""
     all_records = []
     years = list(range(start_year, end_year + 1, chunk_years))
     total_chunks = len(years)
@@ -82,7 +98,7 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
 
         for attempt in range(3):
             try:
-                result = extract_model_chunk(model, scenario, start_date, end_date, station_fc)
+                result = extract_chunk(model, scenario, start_date, end_date, station_fc, bands)
                 break
             except Exception as e:
                 if attempt == 2:
@@ -91,11 +107,10 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
 
         for feat in result["features"]:
             props = feat["properties"]
-            all_records.append({
-                "Date": props["date"],
-                "Station_ID": props["Station_ID"],
-                "pr_kg_m2_s": props.get("mean"),
-            })
+            rec = {"Date": props["date"], "Station_ID": props["Station_ID"]}
+            for b in bands:
+                rec[b] = props.get(b)
+            all_records.append(rec)
 
         if progress_cb:
             progress_cb((idx + 1) / total_chunks, f"{model}: {start_date} to {end_date}")
@@ -103,11 +118,34 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
     df = pd.DataFrame(all_records)
     if df.empty:
         raise RuntimeError(f"No data returned for model {model}. It may not have global coverage at these points.")
-
     df["Date"] = pd.to_datetime(df["Date"])
-    df["Precip_mm"] = df["pr_kg_m2_s"] * PR_UNIT_TO_MM_DAY
-    pivot = df.pivot(index="Date", columns="Station_ID", values="Precip_mm").reset_index()
+    return df
+
+
+def pivot_variable(long_df, band):
+    """Pivot one band to Date x Station_ID, applying its unit conversion."""
+    conv = VARIABLES[band]["convert"]
+    d = long_df[["Date", "Station_ID", band]].copy()
+    d[band] = conv(d[band].astype(float))
+    pivot = d.pivot(index="Date", columns="Station_ID", values=band).reset_index()
     return pivot.sort_values("Date").reset_index(drop=True)
+
+
+def build_monthly_and_basin(daily_df, agg="sum"):
+    """From a Date x Station daily DataFrame, build monthly (Year, Month, stations)
+    and basin-average monthly (Year, Month, Basin_Value)."""
+    station_cols = [c for c in daily_df.columns if c != "Date"]
+    d = daily_df.copy()
+    d["Year"] = d["Date"].dt.year
+    d["Month"] = d["Date"].dt.month
+    if agg == "sum":
+        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
+    else:
+        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].mean().reset_index()
+
+    basin_monthly = monthly[["Year", "Month"]].copy()
+    basin_monthly["Basin_Value"] = monthly[station_cols].mean(axis=1)
+    return monthly, basin_monthly
 
 
 def to_excel_bytes(df):
@@ -117,30 +155,15 @@ def to_excel_bytes(df):
     return buf.getvalue()
 
 
-def build_monthly_and_basin(daily_df):
-    """From a Date x Station daily DataFrame, build monthly (Year, Month, stations)
-    and basin-average monthly (Year, Month, Basin_Rainfall_mm) DataFrames -
-    same convention as Tab 1 IMD outputs."""
-    station_cols = [c for c in daily_df.columns if c != "Date"]
-    d = daily_df.copy()
-    d["Year"] = d["Date"].dt.year
-    d["Month"] = d["Date"].dt.month
-    monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
-
-    basin_monthly = monthly[["Year", "Month"]].copy()
-    basin_monthly["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
-
-    return monthly, basin_monthly
-
-
 # ============================================================
 # UI
 # ============================================================
-st.set_page_config(page_title="CMIP6 Downscaled Precipitation Extraction", layout="wide")
-st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Rainfall Extraction")
+st.set_page_config(page_title="CMIP6 Climate Variable Extraction", layout="wide")
+st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Climate Data Extraction")
 st.caption("MODEL 1 — Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
-           "historical precipitation for the representative stations, converted to mm/day, "
-           "same Date x Station format as IMD for R2/NSE comparison.")
+           "historical precipitation AND the remaining SWAT-relevant variables (Tmax, Tmin, relative "
+           "humidity, wind speed, solar radiation) for the representative stations, in the same "
+           "Date x Station format as IMD, for R2/NSE comparison and SWAT weather-file generation (Tab 6).")
 
 st.subheader("1. Stations")
 station_input_mode = st.radio("Provide station locations", ["Upload Final_Stations.xlsx", "Enter manually"])
@@ -150,7 +173,6 @@ if station_input_mode == "Upload Final_Stations.xlsx":
     f = st.file_uploader("Final_Stations.xlsx (from Tab 1)", type=["xlsx"])
     if f is not None:
         raw = pd.read_excel(f)
-        # case-insensitive column matching
         col_map = {c.lower(): c for c in raw.columns}
         required = ["station_id", "latitude", "longitude"]
         missing = [r for r in required if r not in col_map]
@@ -174,10 +196,17 @@ else:
     except Exception as e:
         st.error(f"Could not parse station list: {e}")
 
-st.subheader("2. Models & period")
+st.subheader("2. Variables, models & period")
+var_options = {f"{k} - {v['label']} ({v['unit']})": k for k, v in VARIABLES.items()}
+selected_var_labels = st.multiselect(
+    "Variables to extract (default: all 6, for SWAT PCP/TMP/HMD/WND/SLR)",
+    list(var_options.keys()), default=list(var_options.keys())
+)
+selected_vars = [var_options[lbl] for lbl in selected_var_labels]
+
 selected_models = st.multiselect(
     f"GCM models (max {MAX_MODELS_PER_RUN} per run)", ALL_MODELS,
-    default=["MPI-ESM1-2-HR", "EC-Earth3", "MIROC6"]
+    default=["MPI-ESM1-2-HR"]
 )
 col1, col2 = st.columns(2)
 start_year = col1.number_input("Start year", value=1984, min_value=1950, max_value=2014)
@@ -189,7 +218,7 @@ if len(selected_models) > MAX_MODELS_PER_RUN:
                f"Run remaining models in a separate run.")
 
 run_disabled = (
-    stations_df is None or len(selected_models) == 0 or len(selected_models) > MAX_MODELS_PER_RUN
+    stations_df is None or not selected_vars or len(selected_models) == 0 or len(selected_models) > MAX_MODELS_PER_RUN
 )
 run_btn = st.button("Extract CMIP6 data", type="primary", disabled=run_disabled)
 
@@ -207,36 +236,60 @@ if run_btn:
     ]
     station_fc = ee.FeatureCollection(station_features)
 
-    model_outputs = {}
+    model_outputs = {}  # model -> {var: (daily, monthly, basin_monthly)}
     for model in selected_models:
         st.write(f"**Extracting {model}**")
         progress = st.progress(0.0)
         status = st.empty()
         try:
-            df_model = extract_model(
-                model, "historical", int(start_year), int(end_year), station_fc, int(chunk_years),
+            long_df = extract_model(
+                model, "historical", int(start_year), int(end_year), station_fc, selected_vars, chunk_years,
                 progress_cb=lambda frac, msg: (progress.progress(frac), status.write(msg))
             )
-            model_outputs[model] = df_model
+            var_outputs = {}
+            for band in selected_vars:
+                daily = pivot_variable(long_df, band)
+                monthly, basin_monthly = build_monthly_and_basin(daily, agg=VARIABLES[band]["agg"])
+                var_outputs[band] = (daily, monthly, basin_monthly)
+            model_outputs[model] = var_outputs
             progress.progress(1.0)
-            status.write(f"Done: {df_model.shape[0]} days x {df_model.shape[1]-1} stations")
+            status.write(f"Done: {long_df['Date'].nunique()} days x {len(stations_df)} stations, "
+                         f"{len(selected_vars)} variable(s)")
         except Exception as e:
             st.error(f"{model} failed: {e}")
 
     if model_outputs:
         st.subheader("3. Results & downloads")
-        st.caption("Each model is provided in the same daily / monthly / basin-monthly formats as the "
-                   "IMD outputs from Tab 1 (Representative_Stations_Rainfall, Representative_Stations_Monthly, "
-                   "Basin_Monthly_Rainfall) - so they can be combined with IMD files for Tab 3 evaluation.")
-        for model, df_model in model_outputs.items():
-            monthly, basin_monthly = build_monthly_and_basin(df_model)
-            with st.expander(f"{model} — {df_model.shape[0]} days"):
-                st.dataframe(df_model.head(), hide_index=True)
-                base = f"CMIP6_{model}_{start_year}-{end_year}"
-                c1, c2, c3 = st.columns(3)
-                c1.download_button(f"Download {base}_daily.xlsx", to_excel_bytes(df_model), f"{base}_daily.xlsx")
-                c2.download_button(f"Download {base}_monthly.xlsx", to_excel_bytes(monthly), f"{base}_monthly.xlsx")
-                c3.download_button(f"Download {base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly), f"{base}_basin_monthly.xlsx")
+        st.caption("Each model is provided per variable in daily / monthly / basin-monthly formats "
+                   "(same convention as Tab 1 IMD outputs). Precipitation aggregates by sum; "
+                   "temperature, humidity, wind, and solar radiation aggregate by mean. "
+                   "Download a single zip per model for use in Tab 3 (evaluation) and Tab 6 "
+                   "(SWAT weather files).")
+
+        for model, var_outputs in model_outputs.items():
+            with st.expander(f"{model}"):
+                # quick preview: precipitation if available, else first variable
+                preview_var = "pr" if "pr" in var_outputs else selected_vars[0]
+                st.dataframe(var_outputs[preview_var][0].head(), hide_index=True)
+
+                # build a single zip with all variables x all formats
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for band, (daily, monthly, basin_monthly) in var_outputs.items():
+                        base = f"CMIP6_{model}_{band}_{start_year}-{end_year}"
+                        zf.writestr(f"{base}_daily.xlsx", to_excel_bytes(daily))
+                        zf.writestr(f"{base}_monthly.xlsx", to_excel_bytes(monthly))
+                        zf.writestr(f"{base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly))
+                zip_buf.seek(0)
+                st.download_button(f"Download {model}_{start_year}-{end_year}_all_variables.zip",
+                                    zip_buf.getvalue(), f"{model}_{start_year}-{end_year}_all_variables.zip")
+
+                # per-variable basin_monthly quick downloads
+                cols = st.columns(len(var_outputs))
+                for c, (band, (daily, monthly, basin_monthly)) in zip(cols, var_outputs.items()):
+                    base = f"CMIP6_{model}_{band}_{start_year}-{end_year}"
+                    c.download_button(f"{band}_basin_monthly.xlsx", to_excel_bytes(basin_monthly),
+                                       f"{base}_basin_monthly.xlsx", key=f"{model}_{band}_bm")
 
 st.markdown("---")
 st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
