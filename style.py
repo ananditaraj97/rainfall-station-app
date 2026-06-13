@@ -10,7 +10,7 @@ ACCENT = "#c1622d"
 LIGHT_BG = "#f5f6f8"
 
 # Edit these two lines to change the sidebar branding text.
-APP_TITLE = " Basin Climate & SWAT Data Portal"
+APP_TITLE = "HydroClimate Hub"
 APP_SUBTITLE = "IMD &middot; CMIP6 &middot; SWAT DATA PLATFORM"
 
 # (label shown in custom nav, path to the page file)
@@ -43,6 +43,17 @@ def inject_css():
         }}
         [data-testid="stSidebar"] hr {{
             border-color: #3b5a82;
+        }}
+        /* widgets with a white/light background inside the navy sidebar need dark text -
+           override the blanket white color from "[data-testid='stSidebar'] *" above */
+        [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"],
+        [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{
+            color: #31333F !important;
+        }}
+        [data-testid="stSidebar"] input,
+        [data-testid="stSidebar"] textarea,
+        [data-testid="stSidebar"] [data-baseweb="select"] * {{
+            color: #31333F !important;
         }}
         /* hide the default auto-generated page list - replaced by custom nav below branding */
         [data-testid="stSidebarNav"] {{
