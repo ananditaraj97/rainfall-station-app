@@ -18,6 +18,7 @@ import ee
 import numpy as np
 import pandas as pd
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 
 # ============================================================
 # CONFIG
@@ -179,6 +180,8 @@ def to_excel_bytes(df):
 # UI
 # ============================================================
 st.set_page_config(page_title="CMIP6 Climate Variable Extraction", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("CMIP6 (NEX-GDDP-CMIP6) Bias-Corrected, Downscaled Climate Data Extraction")
 st.caption("MODEL 1 — Tab 2: Download NASA NEX-GDDP-CMIP6 bias-corrected, statistically downscaled "
            "historical precipitation AND the remaining SWAT-relevant variables (Tmax, Tmin, relative "
@@ -312,5 +315,4 @@ if run_btn:
                     c.download_button(f"{band}_basin_monthly.xlsx", to_excel_bytes(basin_monthly),
                                        f"{base}_basin_monthly.xlsx", key=f"{model}_{band}_bm")
 
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+footer()
