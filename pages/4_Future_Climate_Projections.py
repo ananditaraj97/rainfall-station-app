@@ -195,7 +195,7 @@ st.set_page_config(page_title="Future Climate Projections (CMIP6)", layout="wide
 inject_css()
 sidebar_branding()
 st.title("Future Climate Projections (NEX-GDDP-CMIP6, SSP245 / SSP585)")
-st.caption("MODEL 1 — Tab 4: Download NEX-GDDP-CMIP6 bias-corrected, downscaled future precipitation "
+st.caption("Tab 4: Download NEX-GDDP-CMIP6 bias-corrected, downscaled future precipitation "
            "AND the remaining SWAT-relevant variables (Tmax, Tmin, relative humidity, wind speed, "
            "solar radiation) for the representative stations under SSP245/SSP585, for standard "
            "climate-impact time slices (Near/Mid/Far future), in the same Date x Station format as Tabs 1-2.")
