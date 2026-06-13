@@ -63,7 +63,7 @@ st.caption("Generate SWAT-format weather files (PCP, TMP, HMD, WND, SLR) from CM
            "`..._all_variables.zip` from Tab 2/Tab 4 (all 5 SWAT files at once).")
 
 SWAT_VAR_MAP = {
-    "pr": "pcp", "hurs": "hmd", "sfcWind": "wnd", "rsds": "slr",
+    "pr": "pcp", "rh": "hmd", "sfcWind": "wnd", "rsds": "slr",
 }
 
 a_mode = st.radio("Input type", ["Single precipitation file (PCP only)", "all_variables.zip (full weather set)"])
@@ -138,7 +138,7 @@ if a_mode == "Single precipitation file (PCP only)":
 else:
     st.caption("Upload the `<model>_..._all_variables.zip` downloaded from Tab 2 (historical) or "
                "Tab 4 (future) for ONE model. This contains daily files for all extracted "
-               "variables (pr, tasmax, tasmin, hurs, sfcWind, rsds).")
+               "variables (pr, tasmax, tasmin, rh, sfcWind, rsds).")
     var_zip = st.file_uploader("all_variables.zip", type=["zip"], key="swat_zip_upload")
 
     if var_zip is not None:
@@ -151,7 +151,7 @@ else:
         for name in zf_in.namelist():
             if not name.endswith("_daily.xlsx"):
                 continue
-            m = _re.match(r"CMIP6_.+?_(pr|tasmax|tasmin|hurs|sfcWind|rsds)_.*_daily\.xlsx", name)
+            m = _re.match(r"CMIP6_.+?_(pr|tasmax|tasmin|rh|sfcWind|rsds)_.*_daily\.xlsx", name)
             if not m:
                 continue
             band = m.group(1)
@@ -185,11 +185,11 @@ else:
             elif "tasmax" in var_daily or "tasmin" in var_daily:
                 st.warning("Both tasmax AND tasmin are needed for the SWAT .tmp file - only one was found, skipping TMP.")
 
-            for band, swat_prefix in [("hurs", "hmd"), ("sfcWind", "wnd"), ("rsds", "slr")]:
+            for band, swat_prefix in [("rh", "hmd"), ("sfcWind", "wnd"), ("rsds", "slr")]:
                 if band in var_daily:
                     df_v, sds, scols = align_daily(var_daily[band])
                     files.update(single_value_files(df_v, scols, sds, swat_prefix))
-                    label = {"hurs": "Relative Humidity (HMD)", "sfcWind": "Wind Speed (WND)", "rsds": "Solar Radiation (SLR)"}[band]
+                    label = {"rh": "Relative Humidity (HMD)", "sfcWind": "Wind Speed (WND)", "rsds": "Solar Radiation (SLR)"}[band]
                     for i, s in enumerate(scols):
                         mapping_rows.append({"Station_ID": s, "SWAT_File": f"{swat_prefix}{i+1}.txt", "Variable": label})
 
@@ -280,4 +280,4 @@ if run_delta:
     )
 
 st.markdown("---")
-st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
+st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
