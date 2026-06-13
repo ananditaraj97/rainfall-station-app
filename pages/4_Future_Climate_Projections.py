@@ -1,12 +1,14 @@
 """
 Tab 4 - Future Climate Projections (NEX-GDDP-CMIP6, SSP245 / SSP585)
 
-Same extraction approach as Tab 2, but for future scenarios and
-standard climate-impact time slices (Near/Mid/Far future).
+Same extraction approach as Tab 2 (precipitation + Tmax/Tmin/relative
+humidity/wind/solar radiation), but for future scenarios and standard
+climate-impact time slices (Near/Mid/Far future).
 """
 
 import io
 import time
+import zipfile
 
 import ee
 import numpy as np
@@ -29,8 +31,16 @@ ALL_MODELS = [
     "NorESM2-MM", "TaiESM1", "UKESM1-0-LL",
 ]
 
-PR_UNIT_TO_MM_DAY = 86400.0  # kg/m2/s -> mm/day
-MAX_MODELS_PER_RUN = 3  # future slices need more chunks/model than historical - keep small
+MAX_MODELS_PER_RUN = 2  # future slices (up to 80yr) x 6 variables - keep small
+
+VARIABLES = {
+    "pr":      {"label": "Precipitation",     "unit": "mm/day",     "convert": lambda v: v * 86400.0, "agg": "sum",  "swat_file": "PCP"},
+    "tasmax":  {"label": "Max Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (max)"},
+    "tasmin":  {"label": "Min Temperature",   "unit": "degC",       "convert": lambda v: v - 273.15,  "agg": "mean", "swat_file": "TMP (min)"},
+    "hurs":    {"label": "Relative Humidity", "unit": "%",          "convert": lambda v: v,           "agg": "mean", "swat_file": "HMD"},
+    "sfcWind": {"label": "Wind Speed",        "unit": "m/s",        "convert": lambda v: v,           "agg": "mean", "swat_file": "WND"},
+    "rsds":    {"label": "Solar Radiation",   "unit": "MJ/m2/day",  "convert": lambda v: v * 0.0864,  "agg": "mean", "swat_file": "SLR"},
+}
 
 TIME_SLICES = {
     "Near Future (2021-2040)": (2021, 2040),
@@ -64,12 +74,12 @@ def init_earth_engine():
 # ============================================================
 # EXTRACTION (same mechanics as Tab 2, scenario is a parameter)
 # ============================================================
-def extract_model_chunk(model, scenario, start_date, end_date, station_fc):
+def extract_chunk(model, scenario, start_date, end_date, station_fc, bands):
     coll = (ee.ImageCollection("NASA/GDDP-CMIP6")
             .filter(ee.Filter.eq("model", model))
             .filter(ee.Filter.eq("scenario", scenario))
             .filterDate(start_date, end_date)
-            .select("pr"))
+            .select(bands))
 
     def reduce_image(img):
         date_str = img.date().format("YYYY-MM-dd")
@@ -77,11 +87,12 @@ def extract_model_chunk(model, scenario, start_date, end_date, station_fc):
         return reduced.map(lambda f: f.set("date", date_str))
 
     flat = coll.map(reduce_image).flatten()
-    flat = flat.select(["date", "Station_ID", "mean"])
+    flat = flat.select(["date", "Station_ID"] + bands)
     return flat.getInfo()
 
 
-def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years, progress_cb=None):
+def extract_model(model, scenario, start_year, end_year, station_fc, bands, chunk_years=1, progress_cb=None):
+    """Returns a long DataFrame: Date, Station_ID, <band1>, <band2>, ... (raw values, unconverted)."""
     all_records = []
     years = list(range(start_year, end_year + 1, chunk_years))
     total_chunks = len(years)
@@ -92,7 +103,7 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
 
         for attempt in range(3):
             try:
-                result = extract_model_chunk(model, scenario, start_date, end_date, station_fc)
+                result = extract_chunk(model, scenario, start_date, end_date, station_fc, bands)
                 break
             except Exception as e:
                 if attempt == 2:
@@ -101,11 +112,10 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
 
         for feat in result["features"]:
             props = feat["properties"]
-            all_records.append({
-                "Date": props["date"],
-                "Station_ID": props["Station_ID"],
-                "pr_kg_m2_s": props.get("mean"),
-            })
+            rec = {"Date": props["date"], "Station_ID": props["Station_ID"]}
+            for b in bands:
+                rec[b] = props.get(b)
+            all_records.append(rec)
 
         if progress_cb:
             progress_cb((idx + 1) / total_chunks, f"{model}: {start_date} to {end_date}")
@@ -113,11 +123,31 @@ def extract_model(model, scenario, start_year, end_year, station_fc, chunk_years
     df = pd.DataFrame(all_records)
     if df.empty:
         raise RuntimeError(f"No data returned for model {model}. It may not have global coverage at these points.")
-
     df["Date"] = pd.to_datetime(df["Date"])
-    df["Precip_mm"] = df["pr_kg_m2_s"] * PR_UNIT_TO_MM_DAY
-    pivot = df.pivot(index="Date", columns="Station_ID", values="Precip_mm").reset_index()
+    return df
+
+
+def pivot_variable(long_df, band):
+    conv = VARIABLES[band]["convert"]
+    d = long_df[["Date", "Station_ID", band]].copy()
+    d[band] = conv(d[band].astype(float))
+    pivot = d.pivot(index="Date", columns="Station_ID", values=band).reset_index()
     return pivot.sort_values("Date").reset_index(drop=True)
+
+
+def build_monthly_and_basin(daily_df, agg="sum"):
+    station_cols = [c for c in daily_df.columns if c != "Date"]
+    d = daily_df.copy()
+    d["Year"] = d["Date"].dt.year
+    d["Month"] = d["Date"].dt.month
+    if agg == "sum":
+        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
+    else:
+        monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].mean().reset_index()
+
+    basin_monthly = monthly[["Year", "Month"]].copy()
+    basin_monthly["Basin_Value"] = monthly[station_cols].mean(axis=1)
+    return monthly, basin_monthly
 
 
 def to_excel_bytes(df):
@@ -134,27 +164,15 @@ def fig_to_png_bytes(fig):
     return buf.getvalue()
 
 
-def build_monthly_and_basin(daily_df):
-    station_cols = [c for c in daily_df.columns if c != "Date"]
-    d = daily_df.copy()
-    d["Year"] = d["Date"].dt.year
-    d["Month"] = d["Date"].dt.month
-    monthly = d.drop(columns="Date").groupby(["Year", "Month"])[station_cols].sum(min_count=1).reset_index()
-
-    basin_monthly = monthly[["Year", "Month"]].copy()
-    basin_monthly["Basin_Rainfall_mm"] = monthly[station_cols].mean(axis=1)
-
-    return monthly, basin_monthly
-
-
 # ============================================================
 # UI
 # ============================================================
 st.set_page_config(page_title="Future Climate Projections (CMIP6)", layout="wide")
 st.title("Future Climate Projections (NEX-GDDP-CMIP6, SSP245 / SSP585)")
 st.caption("MODEL 1 — Tab 4: Download NEX-GDDP-CMIP6 bias-corrected, downscaled future precipitation "
-           "for the representative stations under SSP245/SSP585, for standard climate-impact "
-           "time slices (Near/Mid/Far future), in the same Date x Station format as Tabs 1-2.")
+           "AND the remaining SWAT-relevant variables (Tmax, Tmin, relative humidity, wind speed, "
+           "solar radiation) for the representative stations under SSP245/SSP585, for standard "
+           "climate-impact time slices (Near/Mid/Far future), in the same Date x Station format as Tabs 1-2.")
 
 st.subheader("1. Stations")
 station_input_mode = st.radio("Provide station locations", ["Upload Final_Stations.xlsx", "Enter manually"])
@@ -186,7 +204,14 @@ else:
     except Exception as e:
         st.error(f"Could not parse station list: {e}")
 
-st.subheader("2. Scenario, time slice & models")
+st.subheader("2. Variables, scenario, time slice & models")
+var_options = {f"{k} - {v['label']} ({v['unit']})": k for k, v in VARIABLES.items()}
+selected_var_labels = st.multiselect(
+    "Variables to extract (default: all 6, for SWAT PCP/TMP/HMD/WND/SLR)",
+    list(var_options.keys()), default=list(var_options.keys())
+)
+selected_vars = [var_options[lbl] for lbl in selected_var_labels]
+
 c1, c2 = st.columns(2)
 scenario = c1.selectbox("SSP scenario", SCENARIOS)
 slice_choice = c2.selectbox("Time slice", list(TIME_SLICES.keys()), index=0)
@@ -214,7 +239,7 @@ if len(selected_models) > MAX_MODELS_PER_RUN:
                f"Run remaining models in a separate run.")
 
 run_disabled = (
-    stations_df is None or len(selected_models) == 0 or len(selected_models) > MAX_MODELS_PER_RUN
+    stations_df is None or not selected_vars or len(selected_models) == 0 or len(selected_models) > MAX_MODELS_PER_RUN
 )
 run_btn = st.button("Extract future projections", type="primary", disabled=run_disabled)
 
@@ -232,103 +257,121 @@ if run_btn:
     ]
     station_fc = ee.FeatureCollection(station_features)
 
-    model_outputs = {}
+    model_outputs = {}  # model -> {var: (daily, monthly, basin_monthly)}
     for model in selected_models:
         st.write(f"**Extracting {model} ({scenario}, {start_year}-{end_year})**")
         progress = st.progress(0.0)
         status = st.empty()
         try:
-            df_model = extract_model(
-                model, scenario, int(start_year), int(end_year), station_fc, int(chunk_years),
+            long_df = extract_model(
+                model, scenario, int(start_year), int(end_year), station_fc, selected_vars, chunk_years,
                 progress_cb=lambda frac, msg: (progress.progress(frac), status.write(msg))
             )
-            model_outputs[model] = df_model
+            var_outputs = {}
+            for band in selected_vars:
+                daily = pivot_variable(long_df, band)
+                monthly, basin_monthly = build_monthly_and_basin(daily, agg=VARIABLES[band]["agg"])
+                var_outputs[band] = (daily, monthly, basin_monthly)
+            model_outputs[model] = var_outputs
             progress.progress(1.0)
-            status.write(f"Done: {df_model.shape[0]} days x {df_model.shape[1]-1} stations")
+            status.write(f"Done: {long_df['Date'].nunique()} days x {len(stations_df)} stations, "
+                         f"{len(selected_vars)} variable(s)")
         except Exception as e:
             st.error(f"{model} failed: {e}")
 
     if model_outputs:
         st.subheader("3. Results & downloads")
-        st.caption("Same daily / monthly / basin-monthly formats as Tabs 1-2, with scenario and time-slice "
-                   "in the filename, e.g. CMIP6_<model>_ssp245_2021-2040_basin_monthly.xlsx")
+        st.caption("Same daily / monthly / basin-monthly formats as Tab 2, with scenario and time-slice "
+                   "in the filename, e.g. CMIP6_<model>_pr_ssp245_2021-2040_basin_monthly.xlsx. "
+                   "Download a single zip per model for all variables (use in Tab 5 ensembles and Tab 6 "
+                   "SWAT weather files).")
 
-        model_monthly = {}
-        model_basin_monthly = {}
-        for model, df_model in model_outputs.items():
-            monthly, basin_monthly = build_monthly_and_basin(df_model)
-            model_monthly[model] = monthly
-            model_basin_monthly[model] = basin_monthly
-            with st.expander(f"{model} — {df_model.shape[0]} days"):
-                st.dataframe(df_model.head(), hide_index=True)
-                base = f"CMIP6_{model}_{scenario}_{start_year}-{end_year}"
-                cc1, cc2, cc3 = st.columns(3)
-                cc1.download_button(f"Download {base}_daily.xlsx", to_excel_bytes(df_model), f"{base}_daily.xlsx")
-                cc2.download_button(f"Download {base}_monthly.xlsx", to_excel_bytes(monthly), f"{base}_monthly.xlsx")
-                cc3.download_button(f"Download {base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly), f"{base}_basin_monthly.xlsx")
+        for model, var_outputs in model_outputs.items():
+            with st.expander(f"{model}"):
+                preview_var = "pr" if "pr" in var_outputs else selected_vars[0]
+                st.dataframe(var_outputs[preview_var][0].head(), hide_index=True)
+
+                zip_buf = io.BytesIO()
+                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for band, (daily, monthly, basin_monthly) in var_outputs.items():
+                        base = f"CMIP6_{model}_{band}_{scenario}_{start_year}-{end_year}"
+                        zf.writestr(f"{base}_daily.xlsx", to_excel_bytes(daily))
+                        zf.writestr(f"{base}_monthly.xlsx", to_excel_bytes(monthly))
+                        zf.writestr(f"{base}_basin_monthly.xlsx", to_excel_bytes(basin_monthly))
+                zip_buf.seek(0)
+                st.download_button(f"Download {model}_{scenario}_{start_year}-{end_year}_all_variables.zip",
+                                    zip_buf.getvalue(), f"{model}_{scenario}_{start_year}-{end_year}_all_variables.zip")
+
+                cols = st.columns(len(var_outputs))
+                for c, (band, (daily, monthly, basin_monthly)) in zip(cols, var_outputs.items()):
+                    base = f"CMIP6_{model}_{band}_{scenario}_{start_year}-{end_year}"
+                    c.download_button(f"{band}_basin_monthly.xlsx", to_excel_bytes(basin_monthly),
+                                       f"{base}_basin_monthly.xlsx", key=f"{model}_{band}_bm")
 
         # ================================================================
-        # 4. Maps & plots
+        # 4. Maps & plots (precipitation, if extracted)
         # ================================================================
-        st.subheader("4. Maps & plots")
-
-        n_years_period = int(end_year) - int(start_year) + 1
-
-        # 4a. Station map: mean annual rainfall per station (first model, as representative)
         first_model = list(model_outputs.keys())[0]
-        first_monthly = model_monthly[first_model]
-        station_cols = [c for c in first_monthly.columns if c not in ("Year", "Month")]
-        annual_per_station = first_monthly.groupby("Year")[station_cols].sum(min_count=1)
-        mean_annual_station = annual_per_station.mean()  # mm/yr per station
+        if "pr" in model_outputs[first_model]:
+            st.subheader("4. Maps & plots (precipitation)")
 
-        fig_map, ax_map = plt.subplots(figsize=(6, 6))
-        sc = ax_map.scatter(stations_df["Longitude"], stations_df["Latitude"],
-                             c=[mean_annual_station.get(s, np.nan) for s in stations_df["Station_ID"]],
-                             cmap="Blues", s=160, edgecolors="black")
-        for _, r in stations_df.iterrows():
-            ax_map.annotate(r["Station_ID"], (r["Longitude"], r["Latitude"]),
-                             xytext=(4, 4), textcoords="offset points", fontsize=8)
-        cbar = fig_map.colorbar(sc, ax=ax_map)
-        cbar.set_label("Mean annual rainfall (mm/yr)")
-        ax_map.set_xlabel("Longitude")
-        ax_map.set_ylabel("Latitude")
-        ax_map.set_title(f"{first_model} — projected mean annual rainfall\n"
-                          f"{scenario.upper()}, {start_year}-{end_year}")
+            first_daily, first_monthly, _ = model_outputs[first_model]["pr"]
+            station_cols = [c for c in first_monthly.columns if c not in ("Year", "Month")]
+            annual_per_station = first_monthly.groupby("Year")[station_cols].sum(min_count=1)
+            mean_annual_station = annual_per_station.mean()
 
-        # 4b. Bar chart: basin-average mean annual rainfall, all selected models
-        fig_bar, ax_bar = plt.subplots(figsize=(7, 4.5))
-        means = []
-        for model, basin_monthly in model_basin_monthly.items():
-            annual = basin_monthly.groupby("Year")["Basin_Rainfall_mm"].sum(min_count=1)
-            means.append(annual.mean())
-        ax_bar.bar(list(model_basin_monthly.keys()), means, color="#4a90d9")
-        ax_bar.set_ylabel("Mean annual basin rainfall (mm/yr)")
-        ax_bar.set_title(f"Projected basin-average annual rainfall\n{scenario.upper()}, {start_year}-{end_year}")
-        ax_bar.tick_params(axis="x", rotation=20)
-        fig_bar.tight_layout()
+            fig_map, ax_map = plt.subplots(figsize=(6, 6))
+            sc = ax_map.scatter(stations_df["Longitude"], stations_df["Latitude"],
+                                 c=[mean_annual_station.get(s, np.nan) for s in stations_df["Station_ID"]],
+                                 cmap="Blues", s=160, edgecolors="black")
+            for _, r in stations_df.iterrows():
+                ax_map.annotate(r["Station_ID"], (r["Longitude"], r["Latitude"]),
+                                 xytext=(4, 4), textcoords="offset points", fontsize=8)
+            cbar = fig_map.colorbar(sc, ax=ax_map)
+            cbar.set_label("Mean annual rainfall (mm/yr)")
+            ax_map.set_xlabel("Longitude")
+            ax_map.set_ylabel("Latitude")
+            ax_map.set_title(f"{first_model} — projected mean annual rainfall\n"
+                              f"{scenario.upper()}, {start_year}-{end_year}")
 
-        # 4c. Monthly climatology, all selected models
-        fig_clim, ax_clim = plt.subplots(figsize=(8, 4.5))
-        for model, basin_monthly in model_basin_monthly.items():
-            clim = basin_monthly.groupby("Month")["Basin_Rainfall_mm"].mean()
-            ax_clim.plot(clim.index, clim.values, marker="o", linewidth=1.2, label=model)
-        ax_clim.set_xticks(range(1, 13))
-        ax_clim.set_xlabel("Month")
-        ax_clim.set_ylabel("Mean monthly rainfall (mm)")
-        ax_clim.set_title(f"Projected monthly climatology\n{scenario.upper()}, {start_year}-{end_year}")
-        ax_clim.legend(fontsize=8)
-        fig_clim.tight_layout()
+            fig_bar, ax_bar = plt.subplots(figsize=(7, 4.5))
+            means = []
+            for model, var_outputs in model_outputs.items():
+                if "pr" not in var_outputs:
+                    continue
+                _, _, basin_monthly = var_outputs["pr"]
+                annual = basin_monthly.groupby("Year")["Basin_Value"].sum(min_count=1)
+                means.append(annual.mean())
+            ax_bar.bar([m for m in model_outputs if "pr" in model_outputs[m]], means, color="#4a90d9")
+            ax_bar.set_ylabel("Mean annual basin rainfall (mm/yr)")
+            ax_bar.set_title(f"Projected basin-average annual rainfall\n{scenario.upper()}, {start_year}-{end_year}")
+            ax_bar.tick_params(axis="x", rotation=20)
+            fig_bar.tight_layout()
 
-        p1, p2 = st.columns(2)
-        with p1:
-            st.pyplot(fig_map)
-            st.download_button("Download station_rainfall_map.png", fig_to_png_bytes(fig_map), "station_rainfall_map.png")
-        with p2:
-            st.pyplot(fig_bar)
-            st.download_button("Download annual_rainfall_by_model.png", fig_to_png_bytes(fig_bar), "annual_rainfall_by_model.png")
+            fig_clim, ax_clim = plt.subplots(figsize=(8, 4.5))
+            for model, var_outputs in model_outputs.items():
+                if "pr" not in var_outputs:
+                    continue
+                _, _, basin_monthly = var_outputs["pr"]
+                clim = basin_monthly.groupby("Month")["Basin_Value"].mean()
+                ax_clim.plot(clim.index, clim.values, marker="o", linewidth=1.2, label=model)
+            ax_clim.set_xticks(range(1, 13))
+            ax_clim.set_xlabel("Month")
+            ax_clim.set_ylabel("Mean monthly rainfall (mm)")
+            ax_clim.set_title(f"Projected monthly climatology\n{scenario.upper()}, {start_year}-{end_year}")
+            ax_clim.legend(fontsize=8)
+            fig_clim.tight_layout()
 
-        st.pyplot(fig_clim)
-        st.download_button("Download monthly_climatology_future.png", fig_to_png_bytes(fig_clim), "monthly_climatology_future.png")
+            p1, p2 = st.columns(2)
+            with p1:
+                st.pyplot(fig_map)
+                st.download_button("Download station_rainfall_map.png", fig_to_png_bytes(fig_map), "station_rainfall_map.png")
+            with p2:
+                st.pyplot(fig_bar)
+                st.download_button("Download annual_rainfall_by_model.png", fig_to_png_bytes(fig_bar), "annual_rainfall_by_model.png")
+
+            st.pyplot(fig_clim)
+            st.download_button("Download monthly_climatology_future.png", fig_to_png_bytes(fig_clim), "monthly_climatology_future.png")
 
 st.markdown("---")
 st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
