@@ -11,7 +11,7 @@ LIGHT_BG = "#f5f6f8"
 
 # Edit these two lines to change the sidebar branding text.
 APP_TITLE = "HydroClimate Hub"
-APP_SUBTITLE = "IMD &middot; CMIP6 &middot; SWAT DATA PLATFORM"
+APP_SUBTITLE = "An Integrated Platform for IMD Data Processing, CMIP6 Model Evaluation, Ranking and Future Climate Projection Extraction"
 
 # (label shown in custom nav, path to the page file)
 NAV_PAGES = [
