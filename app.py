@@ -330,7 +330,7 @@ st.set_page_config(page_title="Representative Rainfall Station Generator", layou
 inject_css()
 sidebar_branding()
 st.title("Historical IMD Station Extraction")
-st.caption("MODEL 1 — Tab 1: Generate representative rainfall stations from IMD 0.25° gridded data for any basin in India (Hybrid method).")
+st.caption("Tab 1: Generate representative rainfall stations from IMD 0.25° gridded data for any basin in India (Hybrid method).")
 
 with st.sidebar:
     st.header("1. Inputs")
