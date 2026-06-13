@@ -213,3 +213,6 @@ if run_btn:
                 st.dataframe(df_model.head(), hide_index=True)
                 fname = f"CMIP6_{model}_historical_{start_year}-{end_year}.xlsx"
                 st.download_button(f"Download {fname}", to_excel_bytes(df_model), fname)
+
+st.markdown("---")
+st.caption("App developed by Anandita Raj and Prof. Raj Mohan Singh")
