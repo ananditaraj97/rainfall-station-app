@@ -17,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
+from style import inject_css, sidebar_branding, footer
 
 # ============================================================
 # CONFIG
@@ -191,6 +192,8 @@ def fig_to_png_bytes(fig):
 # UI
 # ============================================================
 st.set_page_config(page_title="Future Climate Projections (CMIP6)", layout="wide")
+inject_css()
+sidebar_branding()
 st.title("Future Climate Projections (NEX-GDDP-CMIP6, SSP245 / SSP585)")
 st.caption("MODEL 1 — Tab 4: Download NEX-GDDP-CMIP6 bias-corrected, downscaled future precipitation "
            "AND the remaining SWAT-relevant variables (Tmax, Tmin, relative humidity, wind speed, "
@@ -397,5 +400,4 @@ if run_btn:
             st.pyplot(fig_clim)
             st.download_button("Download monthly_climatology_future.png", fig_to_png_bytes(fig_clim), "monthly_climatology_future.png")
 
-st.markdown("---")
-st.caption("Developed by: Ms. Anandita Raj & Dr. Raj Mohan Singh — Department of Civil Engineering, MNNIT Allahabad")
+footer()
